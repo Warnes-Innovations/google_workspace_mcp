@@ -276,6 +276,35 @@ uv run pytest          # test
 
 Single-file service modules live in `g<service>/`, tools are registered with `@server.tool` decorators, and tiers are defined in `core/tool_tiers.yaml`. PRs welcome.
 
+### Workspace-MCP Process Manager
+
+The repository includes `workspace_mcp_ctl.py`, a lightweight process manager for Workspace-MCP.
+
+Create a TOML config at `workspace-mcp-config.toml` with values like:
+
+```toml
+command = ["python", "main.py"]
+args = ["--transport", "streamable-http"]
+working_dir = "."
+pid_file = "workspace-mcp.pid"
+log_file = "workspace-mcp.log"
+start_timeout = 10
+
+[env]
+WORKSPACE_MCP_PORT = "8000"
+OAUTHLIB_INSECURE_TRANSPORT = "1"
+```
+
+Then manage the server with:
+
+```bash
+python workspace_mcp_ctl.py --config workspace-mcp-config.toml start
+python workspace_mcp_ctl.py --config workspace-mcp-config.toml status
+python workspace_mcp_ctl.py --config workspace-mcp-config.toml stop
+python workspace_mcp_ctl.py --config workspace-mcp-config.toml restart
+python workspace_mcp_ctl.py --config workspace-mcp-config.toml check-config
+```
+
 ## License
 
 MIT - see [`LICENSE`](LICENSE). The license is 21 lines and says what it means.
