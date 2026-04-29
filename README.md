@@ -1049,6 +1049,35 @@ uv run pytest
 - `uv run main.py --transport streamable-http` launches the server with your checked-out code for manual verification.
 - Ruff is part of the `dev` group because pre-push hooks call `ruff check` automatically—run it locally before committing to avoid hook failures.
 
+### Workspace-MCP Process Manager
+
+The repository includes `workspace_mcp_ctl.py`, a lightweight process manager for Workspace-MCP.
+
+Create a TOML config at `workspace-mcp-config.toml` with values like:
+
+```toml
+command = ["python", "main.py"]
+args = ["--transport", "streamable-http"]
+working_dir = "."
+pid_file = "workspace-mcp.pid"
+log_file = "workspace-mcp.log"
+start_timeout = 10
+
+[env]
+WORKSPACE_MCP_PORT = "8000"
+OAUTHLIB_INSECURE_TRANSPORT = "1"
+```
+
+Then manage the server with:
+
+```bash
+python workspace_mcp_ctl.py --config workspace-mcp-config.toml start
+python workspace_mcp_ctl.py --config workspace-mcp-config.toml status
+python workspace_mcp_ctl.py --config workspace-mcp-config.toml stop
+python workspace_mcp_ctl.py --config workspace-mcp-config.toml restart
+python workspace_mcp_ctl.py --config workspace-mcp-config.toml check-config
+```
+
 </details>
 
 ### OAuth 2.1 Support (Multi-User Bearer Token Authentication)
