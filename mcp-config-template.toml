@@ -1,0 +1,13 @@
+# Workspace-MCP process manager template configuration
+# Copy this file to mcp-config.toml and edit values as needed.
+
+command = ["python", "main.py"]
+args = ["--transport", "streamable-http"]
+working_dir = "."
+pid_file = "workspace-mcp.pid"
+log_file = "workspace-mcp.log"
+start_timeout = 10
+
+[env]
+WORKSPACE_MCP_PORT = "8000"
+OAUTHLIB_INSECURE_TRANSPORT = "1"

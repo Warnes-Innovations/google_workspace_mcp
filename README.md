@@ -1051,9 +1051,9 @@ uv run pytest
 
 ### Workspace-MCP Process Manager
 
-The repository includes `workspace_mcp_ctl.py`, a lightweight process manager for Workspace-MCP.
+The repository includes `mcp_ctl.py`, a lightweight process manager for Workspace-MCP.
 
-Create a TOML config at `workspace-mcp-config.toml` with values like:
+Create a TOML config at `mcp-config.toml` with values like:
 
 ```toml
 command = ["python", "main.py"]
@@ -1068,14 +1068,40 @@ WORKSPACE_MCP_PORT = "8000"
 OAUTHLIB_INSECURE_TRANSPORT = "1"
 ```
 
+If you want a starter template, copy the included configuration template:
+
+```bash
+cp mcp-config-template.toml mcp-config.toml
+```
+
 Then manage the server with:
 
 ```bash
-python workspace_mcp_ctl.py --config workspace-mcp-config.toml start
-python workspace_mcp_ctl.py --config workspace-mcp-config.toml status
-python workspace_mcp_ctl.py --config workspace-mcp-config.toml stop
-python workspace_mcp_ctl.py --config workspace-mcp-config.toml restart
-python workspace_mcp_ctl.py --config workspace-mcp-config.toml check-config
+python mcp_ctl.py --config mcp-config.toml start
+python mcp_ctl.py --config mcp-config.toml status
+python mcp_ctl.py --config mcp-config.toml stop
+python mcp_ctl.py --config mcp-config.toml restart
+python mcp_ctl.py --config mcp-config.toml check-config
+```
+
+You can also install the current Workspace-MCP package and bundled skill files for multiple clients:
+
+```bash
+python mcp_ctl.py install
+```
+
+If you omit `--clients`, the command will prompt you to choose which clients to install.
+
+To install only specific clients:
+
+```bash
+python mcp_ctl.py install --clients claude,copilot,codex,clive
+```
+
+To install only Claude skills to a custom path:
+
+```bash
+python mcp_ctl.py install --clients claude --skill-dir ~/.claude/skills/managing-google-workspace
 ```
 
 </details>

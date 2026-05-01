@@ -34,6 +34,7 @@ mcp_server_debug.log
 .serena/
 Caddyfile
 ecosystem.config.cjs
+mcp-config.toml
 
 # ---- Agent instructions (not for distribution) -------------------------
 .github/instructions/
