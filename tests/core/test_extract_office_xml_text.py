@@ -8,7 +8,9 @@ is worse than no search — it produces a confident "not present" that is wrong.
 import io
 import zipfile
 
-from core.utils import extract_office_xml_text
+import pytest
+
+from core.utils import OfficeXmlExtractionError, extract_office_xml_text
 
 W_NS = (
     'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
@@ -270,8 +272,12 @@ class TestPowerPoint:
 
 
 class TestFallbackAndOtherFormats:
-    def test_corrupt_zip_returns_none(self):
-        assert extract_office_xml_text(b"definitely not a zip", DOCX_MIME) is None
+    def test_corrupt_zip_raises(self):
+        """Superseded by the unreadable-vs-empty change: a corrupt file is a
+        FINDING, not an absence, so it raises rather than returning None.
+        See tests/core/test_office_extraction_errors.py for the full contract."""
+        with pytest.raises(OfficeXmlExtractionError):
+            extract_office_xml_text(b"definitely not a zip", DOCX_MIME)
 
     def test_spreadsheet_cells_remain_space_joined(self):
         """Sheets have no paragraphs; this fix must not change their behaviour."""
