@@ -8,11 +8,20 @@ sensible defaults for all OAuth-related settings.
 Supports both OAuth 2.0 and OAuth 2.1 with automatic client capability detection.
 """
 
+import logging
 import os
 from ipaddress import ip_address
 from threading import RLock
 from urllib.parse import urlparse
 from typing import List, Optional, Dict, Any
+
+from auth.oauth_clients import (
+    OAuthClient,
+    OAuthClientRegistry,
+    load_registry_from_env as load_oauth_client_registry,
+)
+
+logger = logging.getLogger(__name__)
 
 
 _ASYMMETRIC_JWT_ALGORITHM_FAMILIES = {
@@ -72,9 +81,19 @@ class OAuthConfig:
         # External URL for reverse proxy scenarios
         self.external_url = os.getenv("WORKSPACE_EXTERNAL_URL")
 
-        # OAuth client configuration
-        self.client_id = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
-        self.client_secret = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET")
+        # OAuth client configuration.
+        #
+        # The registry supports several OAuth clients so that accounts in
+        # different Google Workspace organizations can each authorize against
+        # the Cloud project whose consent screen actually permits them. With
+        # only GOOGLE_OAUTH_CLIENT_ID/SECRET set it holds exactly one client,
+        # and client_id/client_secret below behave exactly as before.
+        self.client_registry: Optional[OAuthClientRegistry] = (
+            load_oauth_client_registry()
+        )
+        default_client = self.client_registry.default if self.client_registry else None
+        self.client_id = default_client.client_id if default_client else None
+        self.client_secret = default_client.client_secret if default_client else None
 
         # Branding for the OAuth consent page. FastMCP's OAuth proxy renders the
         # server's name / icon / website on the consent screen; these env vars feed
@@ -285,6 +304,24 @@ class OAuthConfig:
                 else None,
             )
 
+        # These are process-global, so FastMCP's Google provider can only ever
+        # be bound to one client. Per-account client selection therefore applies
+        # to the tool-level (legacy OAuth 2.0) flow only; under OAuth 2.1 every
+        # protocol-level login goes through the default client. Say so loudly
+        # rather than letting non-default accounts fail at Google.
+        registry = self.client_registry
+        if self.oauth21_enabled and registry is not None and len(registry) > 1:
+            default_key = registry.default.key if registry.default else None
+            logger.warning(
+                "%d OAuth clients are registered, but OAuth 2.1 binds FastMCP's "
+                "Google provider to a single client (%s). Protocol-level logins "
+                "will use that client; accounts mapped to %s can only be "
+                "authorized through the tool-level flow.",
+                len(registry),
+                default_key or "<none>",
+                ", ".join(k for k in registry.keys if k != default_key),
+            )
+
         _set_if_absent("FASTMCP_SERVER_AUTH_GOOGLE_CLIENT_ID", self.client_id)
         if self.client_secret:
             _set_if_absent(
@@ -296,6 +333,34 @@ class OAuthConfig:
     def is_public_client(self) -> bool:
         """Return True when only a client_id is configured (no client_secret)."""
         return bool(self.client_id and not self.client_secret)
+
+    def has_multiple_clients(self) -> bool:
+        """True when more than one OAuth client is registered."""
+        registry = self.client_registry
+        return registry is not None and len(registry) > 1
+
+    def get_client_for_email(
+        self, user_google_email: Optional[str] = None
+    ) -> Optional["OAuthClient"]:
+        """
+        Resolve the OAuth client that may authorize the given account.
+
+        Falls back to the configured default, and returns None only when no
+        client is configured at all or when a multi-client registry has no
+        mapping and no default for this account. Callers must treat None as a
+        configuration error rather than substituting an arbitrary client — an
+        account authorized against the wrong Cloud project fails at Google with
+        ``org_internal`` or ``invalid_client``, well away from the real cause.
+        """
+        if not self.client_registry:
+            return None
+        return self.client_registry.resolve(user_google_email)
+
+    def get_client_by_key(self, client_key: Optional[str]) -> Optional["OAuthClient"]:
+        """Look up a registered client by key; None when absent or unregistered."""
+        if not self.client_registry or not client_key:
+            return None
+        return self.client_registry.get(client_key)
 
     def get_redirect_uris(self) -> List[str]:
         """
@@ -397,6 +462,10 @@ class OAuthConfig:
             "client_configured": bool(self.client_id),
             "client_secret_configured": bool(self.client_secret),
             "public_client": self.is_public_client(),
+            # Keys only — never the ids or secrets themselves.
+            "registered_client_keys": (
+                self.client_registry.keys if self.client_registry else []
+            ),
             "oauth21_enabled": self.oauth21_enabled,
             "external_oauth21_provider": self.external_oauth21_provider,
             "pkce_required": self.pkce_required,

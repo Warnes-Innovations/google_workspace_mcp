@@ -23,7 +23,9 @@ from auth.scopes import SCOPES, get_current_scopes, has_required_scopes  # noqa
 from auth.oauth21_session_store import get_oauth21_session_store
 from auth.credential_store import get_credential_store
 from auth.gateway_identity import normalize_principal_email
+from auth.oauth_clients import OAuthClient, load_registry_from_env
 from auth.oauth_config import (
+    get_oauth_config,
     is_oauth21_enabled,
     is_stateless_mode,
     is_trust_gateway_identity,
@@ -210,21 +212,36 @@ def load_credentials_from_session(session_id: str) -> Optional[Credentials]:
     return credentials
 
 
-def load_client_secrets_from_env() -> Optional[Dict[str, Any]]:
+def load_client_secrets_from_env(
+    client: Optional["OAuthClient"] = None,
+) -> Optional[Dict[str, Any]]:
     """
-    Loads the client secrets from environment variables.
+    Loads the client secrets for one registered OAuth client.
 
     Environment variables used:
-        - GOOGLE_OAUTH_CLIENT_ID: OAuth client ID (required)
+        - GOOGLE_OAUTH_CLIENTS_FILE / GOOGLE_OAUTH_CLIENTS: multi-client registry
+        - GOOGLE_OAUTH_CLIENT_ID: OAuth client ID (single-client deployments)
         - GOOGLE_OAUTH_CLIENT_SECRET: OAuth client secret (optional for public clients)
         - GOOGLE_OAUTH_REDIRECT_URI: (optional) OAuth redirect URI
 
+    Args:
+        client: The client to build config for. When omitted, the registry's
+            default client is read from the environment at call time.
+
     Returns:
         Client secrets configuration dict compatible with Google OAuth library,
-        or None if required environment variables are not set.
+        or None if no OAuth client is configured.
     """
-    client_id = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
-    client_secret = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET")
+    if client is None:
+        # Read the environment here rather than via the cached OAuthConfig
+        # singleton: this function's contract is to reflect the environment as
+        # it stands at call time, and the singleton is a snapshot taken at
+        # first access.
+        registry = load_registry_from_env()
+        client = registry.default if registry else None
+
+    client_id = client.client_id if client else None
+    client_secret = client.client_secret if client else None
     redirect_uri = os.getenv("GOOGLE_OAUTH_REDIRECT_URI")
 
     if client_id:
@@ -248,7 +265,10 @@ def load_client_secrets_from_env() -> Optional[Dict[str, Any]]:
         top_level_key = "web" if client_secret else "installed"
         config = {top_level_key: client_config}
 
-        logger.info("Loaded OAuth client credentials from environment variables")
+        logger.info(
+            "Loaded OAuth client credentials for client %s",
+            client.describe() if client else "<default>",
+        )
         return config
 
     logger.debug("OAuth client credentials not found in environment variables")
@@ -327,14 +347,59 @@ def check_client_secrets() -> Optional[str]:
     return None
 
 
+def resolve_oauth_client(
+    client_key: Optional[str] = None,
+    user_google_email: Optional[str] = None,
+) -> Optional[OAuthClient]:
+    """
+    Resolve which OAuth client to use for a flow.
+
+    ``client_key`` wins when given: the callback must complete the exchange with
+    the same client that issued the authorization URL, so it is looked up
+    exactly and a miss is an error rather than a fallback to the default.
+    Otherwise the account's email selects the client via the registry.
+
+    Raises:
+        ValueError: if ``client_key`` names a client that is not registered.
+    """
+    config = get_oauth_config()
+
+    if client_key:
+        client = config.get_client_by_key(client_key)
+        if client is None:
+            # Falling back here would exchange the code against a different
+            # Cloud project and fail at Google as 'invalid_client', pointing
+            # investigation at the token exchange rather than at the config
+            # change that actually caused it.
+            raise ValueError(
+                f"OAuth client {client_key!r} is no longer registered. The "
+                "authorization was started with a client that has since been "
+                "removed or renamed; restart the authentication flow."
+            )
+        return client
+
+    return config.get_client_for_email(user_google_email)
+
+
 def create_oauth_flow(
     scopes: List[str],
     redirect_uri: str,
     state: Optional[str] = None,
     code_verifier: Optional[str] = None,
     autogenerate_code_verifier: bool = True,
+    client_key: Optional[str] = None,
+    user_google_email: Optional[str] = None,
 ) -> Flow:
-    """Creates an OAuth flow using environment variables or client secrets file."""
+    """
+    Creates an OAuth flow using environment variables or client secrets file.
+
+    ``client_key`` / ``user_google_email`` select which registered OAuth client
+    the flow uses. Both may be omitted, which selects the default client and
+    reproduces the single-client behaviour.
+    """
+    client = resolve_oauth_client(
+        client_key=client_key, user_google_email=user_google_email
+    )
     flow_kwargs = {
         "scopes": scopes,
         "redirect_uri": redirect_uri,
@@ -352,7 +417,7 @@ def create_oauth_flow(
         flow_kwargs["autogenerate_code_verifier"] = autogenerate_code_verifier
 
     # Try environment variables first
-    env_config = load_client_secrets_from_env()
+    env_config = load_client_secrets_from_env(client)
     if env_config:
         # Use client config directly
         flow = Flow.from_client_config(env_config, **flow_kwargs)
@@ -547,10 +612,23 @@ async def start_auth_flow(
         oauth_state = os.urandom(16).hex()
         current_scopes = get_current_scopes()
 
+        # Pick the OAuth client whose Cloud project may authorize this account,
+        # and remember it on the state so the callback exchanges the code
+        # against the same client.
+        oauth_client = resolve_oauth_client(user_google_email=user_google_email)
+        if oauth_client is None and get_oauth_config().has_multiple_clients():
+            raise ValueError(
+                f"No OAuth client is configured for '{user_google_email}'. Map its "
+                "address or domain in the OAuth client registry, or set a default "
+                "client."
+            )
+        oauth_client_key = oauth_client.key if oauth_client else None
+
         flow = create_oauth_flow(
             scopes=current_scopes,  # Use scopes for enabled tools only
             redirect_uri=redirect_uri,  # Use passed redirect_uri
             state=oauth_state,
+            client_key=oauth_client_key,
         )
 
         session_id = None
@@ -601,10 +679,12 @@ async def start_auth_flow(
             ),
             enforce_user_email_match=enforce_user_email_match,
             principal_source=principal_source,
+            client_key=oauth_client_key,
         )
 
         logger.info(
             f"Auth flow started for {user_display_name}. State: {oauth_state[:8]}... "
+            f"OAuth client: {oauth_client_key or '<default>'}. "
             f"Browser opened automatically: {browser_opened}"
         )
 
@@ -771,12 +851,17 @@ async def handle_auth_callback(
                     _session_id_log_fingerprint(originating_session_id),
                 )
 
+        # The token exchange must use the same OAuth client that issued the
+        # authorization URL. State entries written before multi-client support
+        # carry no client_key; those fall through to the default client, which
+        # is what issued them.
         flow = create_oauth_flow(
             scopes=scopes,
             redirect_uri=redirect_uri,
             state=state,
             code_verifier=state_info.get("code_verifier"),
             autogenerate_code_verifier=False,
+            client_key=state_info.get("client_key"),
         )
 
         # Exchange the authorization code for credentials
