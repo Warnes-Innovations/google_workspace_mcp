@@ -7,9 +7,11 @@ Covers:
   output contains every requested message.
 """
 
+import asyncio
 import os
 import ssl
 import sys
+import threading
 from unittest.mock import Mock
 
 import pytest
@@ -31,6 +33,32 @@ def _unwrap(tool):
     while hasattr(fn, "__wrapped__"):
         fn = fn.__wrapped__
     return fn
+
+
+def _own_thread_sleep(record=None):
+    """Build an ``asyncio.sleep`` replacement scoped to the calling thread.
+
+    ``monkeypatch.setattr("asyncio.sleep", ...)`` replaces ONE module attribute
+    shared by every event loop in the process, not just the loop under test. If
+    any background loop is alive -- a uvicorn server left serving in a daemon
+    thread, say -- its own ``await asyncio.sleep(...)`` lands in the
+    replacement too. Recording those delays corrupts the assertion, and
+    returning without awaiting turns that loop's poll into a busy spin
+    (measured: >500,000 stray calls in 0.5s).
+
+    So: record and short-circuit only for the thread that installed this, and
+    hand every other caller the genuine ``asyncio.sleep``.
+    """
+    owner = threading.get_ident()
+    real_sleep = asyncio.sleep
+
+    async def _sleep(delay):
+        if threading.get_ident() != owner:
+            return await real_sleep(delay)
+        if record is not None:
+            record.append(delay)
+
+    return _sleep
 
 
 class _FakeResp:
@@ -260,12 +288,9 @@ async def test_message_retry_uses_three_backoffs(monkeypatch):
         request.execute.side_effect = execute
         return request
 
-    async def record_sleep(delay):
-        sleeps.append(delay)
-
     service = Mock()
     service.users().messages().get.side_effect = message_get
-    monkeypatch.setattr("asyncio.sleep", record_sleep)
+    monkeypatch.setattr("asyncio.sleep", _own_thread_sleep(record=sleeps))
 
     _, message, error = await _fetch_message_with_retry(
         service,
@@ -296,15 +321,12 @@ async def test_message_batch_failure_does_not_restart_exhausted_retries(monkeypa
         request.execute.side_effect = execute
         return request
 
-    async def no_sleep(_delay):
-        return None
-
     batch = Mock()
     batch.execute.side_effect = RuntimeError("batch transport failed")
     service = Mock()
     service.users().messages().get.side_effect = message_get
     service.new_batch_http_request.return_value = batch
-    monkeypatch.setattr("asyncio.sleep", no_sleep)
+    monkeypatch.setattr("asyncio.sleep", _own_thread_sleep())
 
     result = await _unwrap(get_gmail_messages_content_batch)(
         service=service,
@@ -332,15 +354,12 @@ async def test_thread_batch_failure_does_not_restart_exhausted_retries(monkeypat
         request.execute.side_effect = execute
         return request
 
-    async def no_sleep(_delay):
-        return None
-
     batch = Mock()
     batch.execute.side_effect = RuntimeError("batch transport failed")
     service = Mock()
     service.users().threads().get.side_effect = thread_get
     service.new_batch_http_request.return_value = batch
-    monkeypatch.setattr("asyncio.sleep", no_sleep)
+    monkeypatch.setattr("asyncio.sleep", _own_thread_sleep())
 
     result = await _unwrap(get_gmail_threads_content_batch)(
         service=service,

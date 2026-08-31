@@ -66,10 +66,23 @@ def isolated_attachment_env(tmp_path, monkeypatch):
     import core.attachment_storage as storage_module
     import auth.oauth_config as oauth_config_module
     import core.config as core_config_module
+    import auth.oauth_callback_server as callback_server_module
 
     monkeypatch.setattr(storage_module, "STORAGE_DIR", tmp_path)
     monkeypatch.setattr(oauth_config_module, "is_stateless_mode", lambda: False)
     monkeypatch.setattr(core_config_module, "get_transport_mode", lambda: "http")
+    # The line above does NOT reach the code it is aimed at.
+    # core.attachment_storage builds an attachment URL by calling
+    # auth.oauth_callback_server.ensure_stdio_oauth_callback_available(), which
+    # consults the `get_transport_mode` it imported into ITS OWN namespace from
+    # auth.oauth_config -- not the core.config re-export patched above. With the
+    # patch missing its target, the real config singleton answers "stdio"
+    # (its default), production binds a real port, and uvicorn is left serving
+    # in a daemon thread for the rest of the pytest session. Patch the name the
+    # caller actually resolves.
+    monkeypatch.setattr(
+        callback_server_module, "get_transport_mode", lambda: "streamable-http"
+    )
 
     # Reset the cached module-level storage singleton so our patched
     # STORAGE_DIR actually takes effect.
