@@ -165,10 +165,17 @@ def _extract_message_bodies(payload):
         payload (dict): The message payload from Gmail API
 
     Returns:
-        dict: Dictionary with 'text' and 'html' keys containing body content
+        dict: Dictionary with 'text' and 'html' keys containing body content.
+
+        A body part that could not be DECODED is not reported as an absent one:
+        if decoding failed and nothing else was recovered, 'text' carries a
+        damaged-content marker instead of "". Returning "" for both would have
+        the caller print "[No readable content found]" for a message that does
+        have a body we simply could not read.
     """
     text_body = ""
     html_body = ""
+    decode_failures: List[str] = []
     parts = [payload] if "parts" not in payload else payload.get("parts", [])
 
     part_queue = list(parts)  # Use a queue for BFS traversal of parts
@@ -188,6 +195,7 @@ def _extract_message_bodies(payload):
                     html_body = decoded_data
             except Exception as e:
                 logger.warning(f"Failed to decode body part: {e}")
+                decode_failures.append(f"{mime_type or 'unknown part'}: {e}")
 
         # Add sub-parts to queue for multipart messages
         if mime_type.startswith("multipart/") and "parts" in part:
@@ -206,6 +214,17 @@ def _extract_message_bodies(payload):
                 html_body = decoded_data
         except Exception as e:
             logger.warning(f"Failed to decode main payload body: {e}")
+            decode_failures.append(f"{payload.get('mimeType', 'unknown part')}: {e}")
+
+    if not text_body and not html_body and decode_failures:
+        # Damaged is not empty. Leaving both bodies at "" here would render as
+        # "[No readable content found]", telling the reader the message has no
+        # body when in fact it has one we could not decode.
+        text_body = (
+            "[Message body could not be decoded - it appears damaged: "
+            + "; ".join(decode_failures)
+            + "]"
+        )
 
     return {"text": text_body, "html": html_body}
 

@@ -29,6 +29,7 @@ from core.utils import (
     IMAGE_MIME_TYPES,
     encode_image_content,
     OfficeXmlExtractionError,
+    PdfExtractionError,
     extract_office_xml_text,
     extract_pdf_text,
     handle_http_errors,
@@ -543,9 +544,23 @@ async def get_drive_file_content(
                 )
     elif mime_type == "application/pdf":
         # Offload PDF text extraction to a thread to avoid blocking the event loop
-        pdf_text = await asyncio.to_thread(extract_pdf_text, file_content_bytes)
+        pdf_text = None
+        unreadable = None
+        try:
+            pdf_text = await asyncio.to_thread(extract_pdf_text, file_content_bytes)
+        except PdfExtractionError as e:
+            # Say the file is damaged. Falling through to the scanned/image-only
+            # guidance below would send the reader after an OCR problem that is
+            # not there, and recommend a download link for bytes that will not
+            # open either.
+            unreadable = (
+                f"[Could not read '{mime_type}' file - it appears damaged or is "
+                f"not a valid PDF ({len(file_content_bytes)} bytes): {e}]"
+            )
         if pdf_text:
             body_text = pdf_text
+        elif unreadable:
+            body_text = unreadable
         else:
             body_text = (
                 f"[Could not extract text from PDF ({len(file_content_bytes)} bytes) "

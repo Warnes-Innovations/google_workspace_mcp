@@ -327,12 +327,36 @@ def check_credentials_directory_permissions(credentials_dir: str = None) -> None
     )
 
 
-class OfficeXmlExtractionError(Exception):
+class DocumentExtractionError(Exception):
+    """Raised when a document's bytes cannot be READ at all.
+
+    The common contract for every text extractor in this module: return None
+    when a file is readable but holds no extractable text, and raise when the
+    file itself could not be read. A caller that cannot tell those apart ends
+    up reporting a damaged file as an empty, unsupported or image-only one,
+    which sends the reader looking in the wrong place.
+
+    Format-specific subclasses exist so a caller can word its report for the
+    format at hand; catch this base when the response is the same either way.
+    """
+
+
+class OfficeXmlExtractionError(DocumentExtractionError):
     """Raised when an Office file cannot be READ.
 
     Distinct from a valid file that simply contains no text. Callers that cannot
     tell those apart end up reporting a damaged document as an empty or
     unsupported one, which sends the reader looking in the wrong place.
+    """
+
+
+class PdfExtractionError(DocumentExtractionError):
+    """Raised when a PDF cannot be READ.
+
+    Distinct from a readable PDF holding no extractable text — a scanned or
+    image-only document. That one is answered with OCR or a download link; a
+    damaged file is not, so the two must not arrive at the caller as the same
+    value.
     """
 
 
@@ -887,23 +911,50 @@ IMAGE_MIME_TYPES = {
 def extract_pdf_text(file_bytes: bytes) -> Optional[str]:
     """
     Extract text from a PDF using pypdf.
-    Returns plain text with pages separated by double newlines, or None on failure.
-    """
-    try:
-        from pypdf import PdfReader
 
+    Returns:
+        The extracted text with pages separated by double newlines, or None if
+        the PDF is READABLE but holds no extractable text — a scanned or
+        image-only document.
+
+    Raises:
+        PdfExtractionError: the file could not be read at all — not a PDF,
+            truncated, encrypted, or otherwise damaged. This is deliberately
+            NOT folded into the None return: "damaged" and "image-only" call
+            for different responses from a caller, and conflating them points
+            the reader at an OCR problem when the file itself is broken.
+    """
+    # Imported outside the try on purpose. pypdf is a hard dependency, so an
+    # ImportError here is a broken environment, not a broken file, and must not
+    # be reported to the user as a damaged PDF.
+    from pypdf import PdfReader
+
+    try:
         reader = PdfReader(io.BytesIO(file_bytes))
-        pages = []
+    except Exception as e:
+        logger.warning(f"Failed to open PDF: {e}")
+        raise PdfExtractionError(
+            f"not a readable PDF ({len(file_bytes)} bytes): {e}"
+        ) from e
+
+    pages: List[str] = []
+    try:
         for page in reader.pages:
             text = page.extract_text()
             if text:
                 pages.append(text)
-        if not pages:
-            return None
-        return "\n\n".join(pages).strip() or None
     except Exception as e:
+        # Reaching a page can fail on its own (an encrypted file, a damaged
+        # page tree) after the header parsed fine. Returning None here would
+        # present a file we could not read as one that merely holds no text.
         logger.warning(f"Failed to extract PDF text: {e}")
+        raise PdfExtractionError(
+            f"PDF page content could not be read ({len(file_bytes)} bytes): {e}"
+        ) from e
+
+    if not pages:
         return None
+    return "\n\n".join(pages).strip() or None
 
 
 def encode_image_content(file_bytes: bytes, mime_type: str) -> str:
