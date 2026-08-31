@@ -43,3 +43,15 @@ mcp-config.toml
 
 # ---- Agent instructions (not for distribution) -------------------------
 .github/instructions/
+
+# SpecStory transcripts live in the private confidential repo (symlinked).
+# Slash-less form is the ONLY one that matches a symlink; slash form covers
+# a real directory on machines not yet migrated.
+.specstory
+.specstory/
+
+# Agent scratch
+tmp/
+
+# Linked worktrees (per agent-config convention: {project_dir}/worktrees/)
+worktrees/
