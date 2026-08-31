@@ -152,13 +152,12 @@ async def create_form(
         f"[create_form] Invoked. Email: '{user_google_email}', title_len={len(title)}"
     )
 
+    # forms.create accepts ONLY info.title. Sending info.description or
+    # info.documentTitle makes the API reject the whole request with
+    # HTTP 400 "Only info.title can be set when creating a form. To add items
+    # and change settings, use batchUpdate." Everything else must be applied
+    # afterwards via batchUpdate/updateFormInfo.
     form_body: Dict[str, Any] = {"info": {"title": title}}
-
-    if description:
-        form_body["info"]["description"] = description
-
-    if document_title:
-        form_body["info"]["document_title"] = document_title
 
     created_form = await asyncio.to_thread(
         service.forms().create(body=form_body).execute
@@ -170,9 +169,55 @@ async def create_form(
         "responderUri", f"https://docs.google.com/forms/d/{form_id}/viewform"
     )
 
+    info_updates: Dict[str, Any] = {}
+    update_fields: List[str] = []
+    if description:
+        info_updates["description"] = description
+        update_fields.append("description")
+    if document_title:
+        info_updates["documentTitle"] = document_title
+        update_fields.append("documentTitle")
+
+    follow_up_warning = ""
+    if info_updates:
+        try:
+            await asyncio.to_thread(
+                service.forms()
+                .batchUpdate(
+                    formId=form_id,
+                    body={
+                        "requests": [
+                            {
+                                "updateFormInfo": {
+                                    "info": info_updates,
+                                    "updateMask": ",".join(update_fields),
+                                }
+                            }
+                        ]
+                    },
+                )
+                .execute
+            )
+        except Exception as follow_up_error:
+            # The form EXISTS. Surfacing only the failure would strand the user
+            # with an orphaned form they were never told about, so report both.
+            logger.error(
+                f"[create_form] Form {form_id} was created but the follow-up "
+                f"updateFormInfo failed: {follow_up_error}"
+            )
+            follow_up_warning = (
+                f" WARNING: the form was created, but setting "
+                f"{' and '.join(update_fields)} failed: {follow_up_error}. "
+                f"The form still exists at the Edit URL above - retry with "
+                f"batch_update_form using an 'updateFormInfo' request on form "
+                f"ID {form_id} rather than creating another form."
+            )
+        else:
+            created_form.setdefault("info", {}).update(info_updates)
+
     confirmation_message = f"Successfully created form '{created_form.get('info', {}).get('title', title)}' for {user_google_email}. Form ID: {form_id}. Edit URL: {edit_url}. Responder URL: {responder_url}"
     logger.info(f"Form created successfully for {user_google_email}. ID: {form_id}")
-    return confirmation_message
+    return confirmation_message + follow_up_warning
 
 
 @server.tool(

@@ -18,6 +18,11 @@ from mcp.types import ToolAnnotations
 
 from auth.service_decorator import require_google_service
 from core.server import server
+from core.api_enablement import (
+    get_activation_url,
+    get_api_enablement_message,
+    is_service_disabled_error,
+)
 from core.utils import UserInputError, handle_http_errors
 
 logger = logging.getLogger(__name__)
@@ -32,6 +37,31 @@ def _format_reauth_message(error: Exception, user_google_email: str) -> str:
 
     # Only suggest re-authentication for auth-related errors (401, 403)
     if isinstance(error, HttpError) and error.resp.status in (401, 403):
+        # A 403 caused by the Tasks API being switched off in the Cloud project
+        # is a configuration problem, not an authentication one. Re-authenticating
+        # cannot enable an API, so never advise it here.
+        structured_details = getattr(error, "error_details", None)
+        if error.resp.status == 403 and is_service_disabled_error(
+            str(error), structured_details
+        ):
+            enablement_msg = get_api_enablement_message(
+                str(error), "tasks", structured_details
+            )
+            if enablement_msg:
+                return f"{base}\n\n{enablement_msg}"
+
+            activation_url = get_activation_url(structured_details)
+            link_hint = (
+                f"Enable it here: {activation_url}"
+                if activation_url
+                else "Please check the Google Cloud Console to enable it."
+            )
+            return (
+                f"{base}. The Google Tasks API is not enabled for your project. "
+                f"{link_hint} This is NOT an authentication problem - "
+                f"re-authenticating will not fix it, so do not call 'start_google_auth'."
+            )
+
         base += ". You might need to re-authenticate."
         if is_oauth21_enabled():
             if is_external_oauth21_provider():

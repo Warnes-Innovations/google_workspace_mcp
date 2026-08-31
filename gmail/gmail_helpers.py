@@ -16,6 +16,8 @@ from typing import Any, Callable, Dict, Iterable, List, Literal, Mapping, Option
 from fastmcp.exceptions import ToolError as ToolExecutionError
 from googleapiclient.errors import HttpError
 
+from core.api_enablement import is_service_disabled_error
+
 logger = logging.getLogger(__name__)
 
 RAW_BODY_TRUNCATE_LIMIT = 20000
@@ -659,9 +661,16 @@ async def _get_send_as_entries(service) -> List[Dict[str, Any]]:
         )
     except HttpError as e:
         if _is_benign_signature_http_error(e):
-            logger.info(
-                "Skipping Gmail send-as lookup: missing auth/scope for settings endpoint."
+            # A 403 here is skippable either way (send-as signatures are
+            # optional), but do not log it as an auth problem when Google is
+            # actually saying the API is disabled in the Cloud project - that
+            # misdirects whoever reads this line later.
+            cause = (
+                "Gmail API not enabled for this Cloud project"
+                if is_service_disabled_error(str(e), getattr(e, "error_details", None))
+                else "missing auth/scope for settings endpoint"
             )
+            logger.info(f"Skipping Gmail send-as lookup: {cause}.")
             return []
         logger.error(f"Failed to fetch Gmail send-as settings: {e}", exc_info=True)
         raise _signature_fetch_tool_error(e) from e

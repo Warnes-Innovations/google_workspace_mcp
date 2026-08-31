@@ -20,7 +20,11 @@ from defusedxml import DefusedXmlException, ElementTree as ET
 
 from fastmcp.exceptions import ToolError
 from googleapiclient.errors import HttpError
-from .api_enablement import get_api_enablement_message
+from .api_enablement import (
+    get_activation_url,
+    get_api_enablement_message,
+    is_service_disabled_error,
+)
 from auth.google_auth import GoogleAuthenticationError
 from auth.oauth_config import is_oauth21_enabled, is_external_oauth21_provider
 
@@ -911,14 +915,21 @@ def handle_http_errors(
                 except HttpError as error:
                     user_google_email = kwargs.get("user_google_email", "N/A")
                     error_details = str(error)
+                    structured_details = getattr(error, "error_details", None)
 
-                    # Check if this is an API not enabled error
-                    if (
-                        error.resp.status == 403
-                        and "accessNotConfigured" in error_details
+                    # Check if this is an API not enabled error.
+                    #
+                    # Google returns HTTP 403 for BOTH "the API is switched off in
+                    # your Cloud project" and "you are not authorized", so this
+                    # branch MUST be evaluated before the generic 401/403 branch
+                    # below. A disabled API is a project configuration problem;
+                    # re-authenticating cannot fix it, and telling the user to do
+                    # so sends them into a consent loop for the wrong problem.
+                    if error.resp.status == 403 and is_service_disabled_error(
+                        error_details, structured_details
                     ):
                         enablement_msg = get_api_enablement_message(
-                            error_details, service_type
+                            error_details, service_type, structured_details
                         )
 
                         if enablement_msg:
@@ -927,10 +938,18 @@ def handle_http_errors(
                                 f"User: {user_google_email}"
                             )
                         else:
+                            activation_url = get_activation_url(structured_details)
+                            link_hint = (
+                                f"Enable it here: {activation_url}"
+                                if activation_url
+                                else "Please check the Google Cloud Console to enable it."
+                            )
                             message = (
                                 f"API error in {tool_name}: {error}. "
                                 f"The required API is not enabled for your project. "
-                                f"Please check the Google Cloud Console to enable it."
+                                f"{link_hint} "
+                                f"This is NOT an authentication problem - re-authenticating "
+                                f"will not fix it, so do not call 'start_google_auth'."
                             )
                     elif error.resp.status in [401, 403]:
                         # Authentication/authorization errors
