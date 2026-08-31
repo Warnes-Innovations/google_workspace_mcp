@@ -146,6 +146,7 @@ exclude = ["tests*", "docs*", "build", "dist"]
 
 [tool.pytest.ini_options]
 addopts = "--ignore=tests/gappsscript/manual_test.py"
+norecursedirs = ["tmp", ".venv", "worktrees"]
 pythonpath = ["."]
 markers = [
     "integration: marks tests as requiring real external services (deselect with '-m \"not integration\"')",

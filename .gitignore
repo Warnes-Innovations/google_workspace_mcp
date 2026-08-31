@@ -50,10 +50,17 @@ mcp-config.toml
 .specstory
 .specstory/
 
-# Agent scratch. Slash-less form matches a symlink; the slash form does not,
-# so a directory-only rule silently stops matching if tmp becomes a link.
+# Agent scratch. Two hazards from one entry: without it a `git add -A` commits
+# scratch output, AND a bare `pytest` collects tmp/, so a stray test_*.py there
+# silently joins the suite and corrupts the counts (see norecursedirs in
+# pyproject.toml, which closes the second).
+#
+# Both forms, for the same reason as .specstory above: a trailing slash
+# restricts a pattern to directories, and git does not treat a symlink as one.
 tmp
 tmp/
 
-# Linked worktrees (per agent-config convention: {project_dir}/worktrees/)
+# Linked worktrees (per agent-config convention: {project_dir}/worktrees/).
+# Both forms, same reason.
+worktrees
 worktrees/
