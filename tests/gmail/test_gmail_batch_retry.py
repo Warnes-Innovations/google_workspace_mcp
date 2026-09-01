@@ -7,11 +7,9 @@ Covers:
   output contains every requested message.
 """
 
-import asyncio
 import os
 import ssl
 import sys
-import threading
 from unittest.mock import Mock
 
 import pytest
@@ -19,6 +17,7 @@ from googleapiclient.errors import HttpError
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
+from tests.helpers import own_thread_sleep as _own_thread_sleep  # noqa: E402
 from gmail.gmail_helpers import _is_retryable_error
 from gmail.gmail_tools import (
     _fetch_message_with_retry,
@@ -33,32 +32,6 @@ def _unwrap(tool):
     while hasattr(fn, "__wrapped__"):
         fn = fn.__wrapped__
     return fn
-
-
-def _own_thread_sleep(record=None):
-    """Build an ``asyncio.sleep`` replacement scoped to the calling thread.
-
-    ``monkeypatch.setattr("asyncio.sleep", ...)`` replaces ONE module attribute
-    shared by every event loop in the process, not just the loop under test. If
-    any background loop is alive -- a uvicorn server left serving in a daemon
-    thread, say -- its own ``await asyncio.sleep(...)`` lands in the
-    replacement too. Recording those delays corrupts the assertion, and
-    returning without awaiting turns that loop's poll into a busy spin
-    (measured: >500,000 stray calls in 0.5s).
-
-    So: record and short-circuit only for the thread that installed this, and
-    hand every other caller the genuine ``asyncio.sleep``.
-    """
-    owner = threading.get_ident()
-    real_sleep = asyncio.sleep
-
-    async def _sleep(delay):
-        if threading.get_ident() != owner:
-            return await real_sleep(delay)
-        if record is not None:
-            record.append(delay)
-
-    return _sleep
 
 
 class _FakeResp:
