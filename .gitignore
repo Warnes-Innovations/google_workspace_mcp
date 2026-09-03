@@ -50,7 +50,9 @@ mcp-config.toml
 .specstory
 .specstory/
 
-# Agent scratch
+# Agent scratch. Slash-less form matches a symlink; the slash form does not,
+# so a directory-only rule silently stops matching if tmp becomes a link.
+tmp
 tmp/
 
 # Linked worktrees (per agent-config convention: {project_dir}/worktrees/)

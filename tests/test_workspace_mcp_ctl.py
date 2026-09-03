@@ -1,8 +1,6 @@
-import argparse
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,7 +11,6 @@ from mcp_ctl import (
     install_command,
     install_workspace_mcp_skill,
     parse_config,
-    WorkspaceMCPConfig,
 )
 
 
@@ -34,7 +31,7 @@ def test_parse_config_minimal(tmp_path: Path):
 
 def test_parse_config_unknown_field(tmp_path: Path):
     config_path = tmp_path / "mcp-config.toml"
-    config_path.write_text("command = [\"python\"]\nunknown = true\n")
+    config_path.write_text('command = ["python"]\nunknown = true\n')
 
     with pytest.raises(ValueError, match="Unknown config fields"):
         parse_config(config_path)
@@ -55,6 +52,7 @@ def test_status_start_stop_cycle(tmp_path: Path):
     assert controller.start() == 0
     assert controller.status() == 0
     assert pid_file.exists()
+    assert log_file.exists()
 
     stop_code = controller.stop()
     assert stop_code == 0
@@ -93,9 +91,7 @@ def test_parse_config_command_string_and_env_file(tmp_path: Path):
 
 def test_parse_config_invalid_start_timeout(tmp_path: Path):
     config_path = tmp_path / "mcp-config.toml"
-    config_path.write_text(
-        """command = [\"python\"]\nargs = []\nstart_timeout = 0\n"""
-    )
+    config_path.write_text("""command = [\"python\"]\nargs = []\nstart_timeout = 0\n""")
 
     with pytest.raises(ValueError, match="'start_timeout' must be a positive integer"):
         parse_config(config_path)
@@ -114,6 +110,7 @@ def test_restart_reuses_config(tmp_path: Path):
 
     assert controller.start() == 0
     assert pid_file.exists()
+    assert log_file.exists()
     assert controller.restart() == 0
     assert controller.stop() == 0
     assert controller.status() == 1
@@ -134,10 +131,13 @@ def test_start_removes_stale_pid(tmp_path: Path):
 
     assert controller.start() == 0
     assert pid_file.exists()
+    assert log_file.exists()
     assert controller.stop() == 0
 
 
-def test_main_check_config_outputs_summary(tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture):
+def test_main_check_config_outputs_summary(
+    tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture
+):
     import mcp_ctl
 
     config_path = tmp_path / "mcp-config.toml"
@@ -145,7 +145,9 @@ def test_main_check_config_outputs_summary(tmp_path: Path, monkeypatch, capsys: 
         f"""command = [\"{sys.executable}\", \"-m\", \"http.server\"]\nargs = [\"8000\"]\nworking_dir = \".\"\npid_file = \"workspace.pid\"\nlog_file = \"workspace.log\"\nstart_timeout = 2\n"""
     )
 
-    monkeypatch.setattr(sys, "argv", ["mcp_ctl.py", "--config", str(config_path), "check-config"])
+    monkeypatch.setattr(
+        sys, "argv", ["mcp_ctl.py", "--config", str(config_path), "check-config"]
+    )
     assert mcp_ctl.main() == 0
     captured = capsys.readouterr()
     assert "Workspace-MCP management configuration:" in captured.out
@@ -223,10 +225,11 @@ def test_install_command_prompts_for_clients(tmp_path: Path, monkeypatch):
     (skill_source / "SKILL.md").write_text("skill")
 
     home = tmp_path / "home"
-    import mcp_ctl
 
     monkeypatch.setattr("mcp_ctl.get_repo_root", lambda: root)
-    monkeypatch.setattr(mcp_ctl.sys, "stdin", SimpleNamespace(isatty=lambda: True), raising=False)
+    monkeypatch.setattr(
+        mcp_ctl.sys, "stdin", SimpleNamespace(isatty=lambda: True), raising=False
+    )
 
     def fake_run(cmd, check):
         assert cmd[:3] == [sys.executable, "-m", "pip"]
@@ -249,8 +252,12 @@ def test_install_command_prompts_for_clients(tmp_path: Path, monkeypatch):
 
     status = install_command(args)
     assert status == 0
-    assert (home / ".claude" / "skills" / "managing-google-workspace" / "SKILL.md").exists()
-    assert (home / ".clive" / "skills" / "managing-google-workspace" / "SKILL.md").exists()
+    assert (
+        home / ".claude" / "skills" / "managing-google-workspace" / "SKILL.md"
+    ).exists()
+    assert (
+        home / ".clive" / "skills" / "managing-google-workspace" / "SKILL.md"
+    ).exists()
 
 
 def test_install_command_installs_multiple_clients(tmp_path: Path, monkeypatch):
@@ -282,7 +289,15 @@ def test_install_command_installs_multiple_clients(tmp_path: Path, monkeypatch):
 
     status = install_command(args)
     assert status == 0
-    assert (home / ".claude" / "skills" / "managing-google-workspace" / "SKILL.md").exists()
-    assert (home / ".copilot" / "skills" / "managing-google-workspace" / "SKILL.md").exists()
-    assert (home / ".codex" / "skills" / "managing-google-workspace" / "SKILL.md").exists()
-    assert (home / ".clive" / "skills" / "managing-google-workspace" / "SKILL.md").exists()
+    assert (
+        home / ".claude" / "skills" / "managing-google-workspace" / "SKILL.md"
+    ).exists()
+    assert (
+        home / ".copilot" / "skills" / "managing-google-workspace" / "SKILL.md"
+    ).exists()
+    assert (
+        home / ".codex" / "skills" / "managing-google-workspace" / "SKILL.md"
+    ).exists()
+    assert (
+        home / ".clive" / "skills" / "managing-google-workspace" / "SKILL.md"
+    ).exists()

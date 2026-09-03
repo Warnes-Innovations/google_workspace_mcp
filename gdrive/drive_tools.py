@@ -36,6 +36,9 @@ from core.utils import (
 from core.server import server
 from core.config import get_transport_mode
 from gdrive.drive_helpers import (
+    _as_single_line,
+    _format_drive_file_line,
+    _sanitize_drive_text,
     DRIVE_QUERY_PATTERNS,
     FOLDER_MIME_TYPE,
     GOOGLE_APPS_MIME_PREFIX,
@@ -61,6 +64,7 @@ from gdrive.drive_helpers import (
     resolve_drive_item,
     resolve_file_type_mime,
     resolve_folder_id,
+    resolve_recency_order_by,
     validate_expiration_time,
     validate_share_role,
     validate_share_type,
@@ -193,8 +197,10 @@ async def search_drive_files(
         query (str): The search query string. Supports Google Drive search operators.
                      NOTE: Owner-based queries ('user@example.com' in owners) DO NOT WORK in Shared Drives
                      because files are owned by the shared drive itself, not individual users.
-                     For recent files by a specific user in Shared Drives, search by modifiedTime
-                     and use order_by='modifiedTime desc' instead.
+                     For recent files with no search terms, prefer `list_recent_files` — it needs
+                     no query and is unaffected by this limitation. Use this tool when you need
+                     recency combined with search terms, or a time window: add a
+                     modifiedTime clause and order_by='modifiedTime desc'.
         page_size (int): The maximum number of files to return. Defaults to 10.
         page_token (Optional[str]): Page token from a previous response's nextPageToken to retrieve the next page of results.
         drive_id (Optional[str]): ID of the shared drive to search. If None, behavior depends on `corpora` and `include_items_from_all_drives`.
@@ -278,53 +284,172 @@ async def search_drive_files(
     header = f"Found {len(files)} files for {user_google_email} matching '{query}':"
     formatted_files_text_parts = [header]
     for item in files:
-        if detailed:
-            size_str = f", Size: {item.get('size', 'N/A')}" if "size" in item else ""
-            created_str = (
-                f", Created: {item['createdTime']}" if item.get("createdTime") else ""
-            )
-            # Last modifying user (not available for all files)
-            lmu = item.get("lastModifyingUser")
-            if lmu:
-                lmu_name = lmu.get("displayName", "")
-                lmu_email = lmu.get("emailAddress", "")
-                if lmu_name and lmu_email:
-                    last_edited_by_str = f", Last Edited By: {lmu_name} <{lmu_email}>"
-                elif lmu_name:
-                    last_edited_by_str = f", Last Edited By: {lmu_name}"
-                elif lmu_email:
-                    last_edited_by_str = f", Last Edited By: {lmu_email}"
-                else:
-                    last_edited_by_str = ""
-            else:
-                last_edited_by_str = ""
-            # Anyone-with-link permission role (reader/commenter/writer)
-            anyone_role_str = ""
-            for perm in item.get("permissions", []):
-                if perm.get("type") == "anyone":
-                    anyone_role_str = (
-                        f", Anyone with link: {perm.get('role', 'unknown')}"
-                    )
-                    break
-            # TODO: "Created By" (original file creator) is not included here.
-            # For Shared Drive files the `owners` field is always empty — the drive
-            # owns the file.  True creator attribution requires fetching revision 1
-            # via files/{id}/revisions and reading its lastModifyingUser.  That adds
-            # one API call per file and should be a separate follow-up.
-            formatted_files_text_parts.append(
-                f'- Name: "{item["name"]}" (ID: {item["id"]}, Type: {item["mimeType"]}{size_str}'
-                f"{created_str}, Modified: {item.get('modifiedTime', 'N/A')}"
-                f"{last_edited_by_str}{anyone_role_str})"
-                f" Link: {item.get('webViewLink', '#')}"
-            )
-        else:
-            formatted_files_text_parts.append(
-                f'- Name: "{item["name"]}" (ID: {item["id"]}, Type: {item["mimeType"]})'
-            )
+        formatted_files_text_parts.append(_format_drive_file_line(item, detailed))
     if next_token:
         formatted_files_text_parts.append(f"nextPageToken: {next_token}")
     text_output = "\n".join(formatted_files_text_parts)
     return text_output
+
+
+@server.tool(
+    title="List Recent Files",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@handle_http_errors("list_recent_files", is_read_only=True, service_type="drive")
+@require_google_service("drive", "drive_read")
+async def list_recent_files(
+    service,
+    user_google_email: str,
+    order_by: str = "recency",
+    page_size: int = 10,
+    page_token: Optional[str] = None,
+    file_type: Optional[str] = None,
+    drive_id: Optional[str] = None,
+    include_items_from_all_drives: bool = True,
+    corpora: Optional[str] = None,
+    detailed: bool = True,
+    include_trashed: bool = False,
+) -> str:
+    """
+    Lists the user's most recent Drive files, newest first, with no query needed.
+
+    Use this to answer "what have I been working on?", "what did I open recently?"
+    or "show me my latest files". It is the right tool whenever recency is the
+    whole question — for anything with search terms, use `search_drive_files`;
+    for the contents of one folder, use `list_drive_items`.
+
+    This works in Shared Drives, where owner-based queries such as
+    `'user@example.com' in owners` silently return nothing because the drive —
+    not the user — owns the files.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        order_by (str): Which recency signal to sort on, always descending:
+                        'recency' (default; Drive's blended most-recent-activity
+                        signal), 'lastModified' (anyone's last edit),
+                        'lastModifiedByMe' (this user's last edit),
+                        'lastViewedByMe', 'created', or 'sharedWithMe'.
+                        Case-, underscore- and hyphen-insensitive. A redundant
+                        trailing ' desc' is accepted; ' asc' is rejected, as is
+                        any raw Drive sort key not in the list above.
+                        Note the sorted-on timestamp is not shown in the output —
+                        only Created/Modified are — so for 'recency',
+                        'lastModifiedByMe', 'lastViewedByMe' and 'sharedWithMe'
+                        the visible times will look out of order. The header
+                        names the sort that was REQUESTED. Drive may ignore it
+                        for accounts with very large file counts, and does not
+                        define where rows missing the sort key land, so the
+                        response does not confirm the sort was applied.
+                        Note also that 'sharedWithMe' and 'lastViewedByMe'
+                        narrow the result set to files that carry that key.
+        page_size (int): The maximum number of files to return. Defaults to 10.
+        page_token (Optional[str]): Page token from a previous response's nextPageToken.
+                                    IMPORTANT: `order_by` is not carried by the token.
+                                    Pass the SAME order_by on every page of a sequence —
+                                    omitting it silently reverts to 'recency' and page 2
+                                    comes back under a different sort, skipping and
+                                    duplicating rows with nothing in the output to show it.
+        file_type (Optional[str]): Restrict results to a specific file type. Accepts a
+                                   friendly name ('folder', 'document'/'doc',
+                                   'spreadsheet'/'sheet', 'presentation'/'slides', 'form',
+                                   'drawing', 'pdf', 'shortcut', 'script', 'site',
+                                   'jam'/'jamboard') or any raw MIME type string.
+                                   Defaults to None (all types).
+        drive_id (Optional[str]): ID of a shared drive to scope the listing to.
+        include_items_from_all_drives (bool): Whether shared drive items should be
+                                              included. Defaults to True. Effective when
+                                              `drive_id` is not set.
+        corpora (Optional[str]): Bodies of items to query ('user', 'domain', 'drive',
+                                 'allDrives'). Defaults to 'drive' when `drive_id` is set.
+        detailed (bool): Whether to include size, creation/modification times,
+                         last editor, shared drive ID, and link. Note this tool
+                         does NOT request file ACLs, so no "Anyone with link"
+                         annotation appears — use get_drive_file_permissions
+                         when sharing state is the question.
+                         Defaults to True.
+        include_trashed (bool): Whether to include files in the trash. Defaults to False.
+
+    Returns:
+        str: A formatted list of recent files, most recent first. Includes a
+             nextPageToken line when more results are available.
+    """
+    logger.info(
+        f"[list_recent_files] Invoked. Email: '{user_google_email}', order_by: '{order_by}', "
+        f"file_type: '{file_type}', include_trashed: {include_trashed}"
+    )
+
+    resolved_order_by = resolve_recency_order_by(order_by)
+
+    # files.list needs a query; 'trashed' is the only axis this tool filters on
+    # by default, so build up from there rather than from a fullText clause.
+    clauses = []
+    if not include_trashed:
+        clauses.append("trashed = false")
+    if file_type is not None:
+        mime = resolve_file_type_mime(file_type)
+        clauses.append(f"mimeType = '{mime}'")
+        logger.info(f"[list_recent_files] Added mimeType filter: '{mime}'")
+
+    # Sorting on a per-user timestamp that most rows lack puts null-key files
+    # in an order Drive does not define. Where a matching query term exists,
+    # narrow to the rows that actually carry the key. `sharedWithMe` and
+    # `viewedByMeTime` are supported search terms; `modifiedByMeTime` is not,
+    # so 'lastModifiedByMe' has no equivalent filter and is left unnarrowed.
+    if resolved_order_by.startswith("sharedWithMeTime"):
+        clauses.append("sharedWithMe = true")
+    elif resolved_order_by.startswith("viewedByMeTime"):
+        clauses.append("viewedByMeTime > '1970-01-01T00:00:00'")
+
+    final_query = " and ".join(clauses)
+
+    list_params = build_drive_list_params(
+        query=final_query,
+        page_size=page_size,
+        drive_id=drive_id,
+        include_items_from_all_drives=include_items_from_all_drives,
+        corpora=corpora,
+        page_token=page_token,
+        detailed=detailed,
+        # Deliberately NOT include_permissions: a recency listing answers "what
+        # was I working on", not "who can see it". Fetching ACLs here would
+        # answer at the `extended` tier the same question `check_drive_file_public_access`
+        # is gated to `complete` for, and would render a fail-quiet sharing
+        # indicator — absent `permissions` is indistinguishable from "not shared",
+        # and Drive omits the field entirely for Shared Drive items. Use
+        # `get_drive_file_permissions` when sharing state is the question.
+        order_by=resolved_order_by,
+    )
+    # An empty q is invalid; drop the key entirely when there is nothing to filter.
+    if not final_query:
+        list_params.pop("q", None)
+
+    results = await asyncio.to_thread(service.files().list(**list_params).execute)
+    files = results.get("files", [])
+    if not files:
+        return f"No recent files found for {user_google_email}."
+
+    next_token = results.get("nextPageToken")
+    # "requested sort", not "sorted by": Drive documents that it ignores the
+    # requested order for users with very large file counts, and leaves the
+    # placement of rows missing the sort key undefined. Asserting the sort was
+    # applied would state as fact something the response does not confirm.
+    header = (
+        f"Found {len(files)} recent files for {user_google_email} "
+        f"(requested sort: {resolved_order_by}):"
+    )
+    formatted_files_text_parts = [header]
+    for item in files:
+        formatted_files_text_parts.append(
+            _format_drive_file_line(item, detailed, include_drive_id=True)
+        )
+    if next_token:
+        formatted_files_text_parts.append(f"nextPageToken: {next_token}")
+    return "\n".join(formatted_files_text_parts)
 
 
 @server.tool(
@@ -737,38 +862,9 @@ async def list_drive_items(
     )
     formatted_items_text_parts = [header]
     for item in files:
-        if detailed:
-            size_str = f", Size: {item.get('size', 'N/A')}" if "size" in item else ""
-            drive_id_str = (
-                f", Drive ID: {item['driveId']}" if item.get("driveId") else ""
-            )
-            created_str = (
-                f", Created: {item['createdTime']}" if item.get("createdTime") else ""
-            )
-            lmu = item.get("lastModifyingUser")
-            if lmu:
-                lmu_name = lmu.get("displayName", "")
-                lmu_email = lmu.get("emailAddress", "")
-                if lmu_name and lmu_email:
-                    last_edited_by_str = f", Last Edited By: {lmu_name} <{lmu_email}>"
-                elif lmu_name:
-                    last_edited_by_str = f", Last Edited By: {lmu_name}"
-                elif lmu_email:
-                    last_edited_by_str = f", Last Edited By: {lmu_email}"
-                else:
-                    last_edited_by_str = ""
-            else:
-                last_edited_by_str = ""
-            formatted_items_text_parts.append(
-                f'- Name: "{item["name"]}" (ID: {item["id"]}, Type: {item["mimeType"]}{size_str}'
-                f"{created_str}, Modified: {item.get('modifiedTime', 'N/A')}"
-                f"{last_edited_by_str}{drive_id_str})"
-                f" Link: {item.get('webViewLink', '#')}"
-            )
-        else:
-            formatted_items_text_parts.append(
-                f'- Name: "{item["name"]}" (ID: {item["id"]}, Type: {item["mimeType"]})'
-            )
+        formatted_items_text_parts.append(
+            _format_drive_file_line(item, detailed, include_drive_id=True)
+        )
     if next_token:
         formatted_items_text_parts.append(f"nextPageToken: {next_token}")
     text_output = "\n".join(formatted_items_text_parts)
@@ -866,8 +962,11 @@ async def _list_shared_drives_impl(
         rest_flags = ", ".join(k for k, v in rest.items() if v) or "none"
         hidden = " [hidden]" if d.get("hidden") else ""
         parts.append(
-            f'- Name: "{d["name"]}" (ID: {d["id"]}, Created: {d.get("createdTime", "N/A")}){hidden} '
-            f"Capabilities: {cap_flags}; Restrictions: {rest_flags}"
+            _as_single_line(
+                f'- Name: "{_sanitize_drive_text(d["name"])}" (ID: {d["id"]}, '
+                f"Created: {d.get('createdTime', 'N/A')}){hidden} "
+                f"Capabilities: {cap_flags}; Restrictions: {rest_flags}"
+            )
         )
         if include_organizers:
             err = d.get("_organizers_error")
@@ -879,20 +978,29 @@ async def _list_shared_drives_impl(
                     parts.append("  Organizers: <none returned>")
                 else:
                     for o in organizers:
-                        identifier = (
+                        identifier = _sanitize_drive_text(
                             o.get("emailAddress")
                             or o.get("domain")
                             or o.get("displayName")
                             or o.get("type", "?")
                         )
-                        display = o.get("displayName")
+                        # Same untrusted-text class as _format_drive_file_line:
+                        # an organizer's profile name is chosen by that principal.
+                        # Compare SANITIZED against SANITIZED — comparing the raw
+                        # display name to the normalized identifier made the
+                        # values always differ, printing the name twice.
+                        display = _sanitize_drive_text(o.get("displayName"))
                         kind = o.get("type", "?")
                         suffix = (
                             f' ("{display}")'
                             if display and display != identifier
                             else ""
                         )
-                        parts.append(f"  Organizer ({kind}): {identifier}{suffix}")
+                        parts.append(
+                            _as_single_line(
+                                f"  Organizer ({kind}): {identifier}{suffix}"
+                            )
+                        )
     if next_token:
         parts.append(f"nextPageToken: {next_token}")
     return "\n".join(parts)
@@ -1686,13 +1794,17 @@ async def get_drive_file_permissions(
         parent_str = ", ".join(parents) if parents else "None (root or orphaned)"
         owners = file_metadata.get("owners") or []
         if owners:
+            # Owner display names are chosen by the owner, not by this user —
+            # same untrusted-text class as _format_drive_file_line.
             owner_str = ", ".join(
                 (
-                    f"{owner.get('displayName') or owner.get('name') or 'Unknown'} "
-                    f"({owner.get('emailAddress') or owner.get('email')})"
+                    f"{_sanitize_drive_text(owner.get('displayName') or owner.get('name') or 'Unknown')} "
+                    f"({_sanitize_drive_text(owner.get('emailAddress') or owner.get('email'))})"
                 )
                 if (owner.get("emailAddress") or owner.get("email"))
-                else owner.get("displayName") or owner.get("name") or "Unknown"
+                else _sanitize_drive_text(
+                    owner.get("displayName") or owner.get("name") or "Unknown"
+                )
                 for owner in owners
             )
         else:
@@ -1725,7 +1837,8 @@ async def get_drive_file_permissions(
         sharing_user = file_metadata.get("sharingUser")
         if sharing_user:
             output_parts.append(
-                f"  Shared by: {sharing_user.get('displayName', 'Unknown')} ({sharing_user.get('emailAddress', 'Unknown')})"
+                f"  Shared by: {_sanitize_drive_text(sharing_user.get('displayName', 'Unknown'))} "
+                f"({_sanitize_drive_text(sharing_user.get('emailAddress', 'Unknown'))})"
             )
 
         # Process permissions (already resolved above as _perms_for_shared)

@@ -67,7 +67,10 @@ class WorkspaceMCPController:
     def _write_pid(self, pid: int) -> None:
         self.config.pid_file.parent.mkdir(parents=True, exist_ok=True)
         self.config.pid_file.write_text(str(pid))
-        os.chmod(self.config.pid_file, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+        os.chmod(
+            self.config.pid_file,
+            stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH,
+        )
 
     def _remove_pid(self) -> None:
         try:
@@ -142,7 +145,9 @@ class WorkspaceMCPController:
             "stderr": stderr,
         }
         if os.name == "nt":
-            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+            creationflags = (
+                subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+            )
             kwargs["creationflags"] = creationflags
         else:
             kwargs["start_new_session"] = True
@@ -154,7 +159,9 @@ class WorkspaceMCPController:
             return 1
 
         self._write_pid(process.pid)
-        print(f"Workspace-MCP started with PID {process.pid}. Logs -> {self.config.log_file}")
+        print(
+            f"Workspace-MCP started with PID {process.pid}. Logs -> {self.config.log_file}"
+        )
 
         if os.name != "nt":
             start_time = time.time()
@@ -239,15 +246,25 @@ def parse_config(path: Path) -> WorkspaceMCPConfig:
         raise ValueError("'args' must be a list of strings.")
 
     config_dir = path.parent
-    working_dir = (config_dir / config_data.get("working_dir", ".")).expanduser().resolve()
-    pid_file = (config_dir / config_data.get("pid_file", "workspace-mcp.pid")).expanduser().resolve()
-    log_file = (config_dir / config_data.get("log_file", "workspace-mcp.log")).expanduser().resolve()
-    env_file = config_data.get("env_file")
-    env_file_path = (
-        (config_dir / env_file).expanduser().resolve() if env_file else None
+    working_dir = (
+        (config_dir / config_data.get("working_dir", ".")).expanduser().resolve()
     )
+    pid_file = (
+        (config_dir / config_data.get("pid_file", "workspace-mcp.pid"))
+        .expanduser()
+        .resolve()
+    )
+    log_file = (
+        (config_dir / config_data.get("log_file", "workspace-mcp.log"))
+        .expanduser()
+        .resolve()
+    )
+    env_file = config_data.get("env_file")
+    env_file_path = (config_dir / env_file).expanduser().resolve() if env_file else None
     env = config_data.get("env", {})
-    if not isinstance(env, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items()):
+    if not isinstance(env, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in env.items()
+    ):
         raise ValueError("'env' must be a table of string values.")
     start_timeout = config_data.get("start_timeout", DEFAULT_START_TIMEOUT)
     if not isinstance(start_timeout, int) or start_timeout < 1:
@@ -283,7 +300,9 @@ def install_workspace_mcp_server(repo_root: Path) -> int:
         return 1
 
 
-def install_workspace_mcp_skill(source: Path, target: Path, copy_skill: bool = False, force: bool = False) -> int:
+def install_workspace_mcp_skill(
+    source: Path, target: Path, copy_skill: bool = False, force: bool = False
+) -> int:
     if not source.exists():
         print(f"Skill source not found: {source}", file=sys.stderr)
         return 1
@@ -337,7 +356,11 @@ def prompt_for_clients() -> str:
     if choice == "":
         return "all"
     selected: list[str] = []
-    for token in [token.strip().lower() for token in choice.replace(" ", "").split(",") if token.strip()]:
+    for token in [
+        token.strip().lower()
+        for token in choice.replace(" ", "").split(",")
+        if token.strip()
+    ]:
         if token == "1" or token == "claude":
             selected.append("claude")
             continue
@@ -395,19 +418,31 @@ def install_client_skills(
     copy_skill: bool,
     force: bool,
 ) -> int:
-    target = custom_target if custom_target is not None else default_skill_target_for_client(client)
+    target = (
+        custom_target
+        if custom_target is not None
+        else default_skill_target_for_client(client)
+    )
     print(f"Installing skill for {client} at {target}")
-    return install_workspace_mcp_skill(skill_source, target, copy_skill=copy_skill, force=force)
+    return install_workspace_mcp_skill(
+        skill_source, target, copy_skill=copy_skill, force=force
+    )
 
 
 def install_command(args: argparse.Namespace) -> int:
     if args.no_server and args.no_skills:
-        print("Nothing to install. Use --no-server or --no-skills only when one of the install steps should be skipped.", file=sys.stderr)
+        print(
+            "Nothing to install. Use --no-server or --no-skills only when one of the install steps should be skipped.",
+            file=sys.stderr,
+        )
         return 1
 
     if args.clients is None:
         if not sys.stdin.isatty():
-            print("Interactive prompt required when --clients is omitted.", file=sys.stderr)
+            print(
+                "Interactive prompt required when --clients is omitted.",
+                file=sys.stderr,
+            )
             return 2
         try:
             args.clients = prompt_for_clients()
@@ -422,7 +457,10 @@ def install_command(args: argparse.Namespace) -> int:
         return 2
 
     if args.skill_dir and len(clients) != 1:
-        print("--skill-dir may only be used with a single client selection.", file=sys.stderr)
+        print(
+            "--skill-dir may only be used with a single client selection.",
+            file=sys.stderr,
+        )
         return 2
 
     repo_root = get_repo_root()
@@ -434,7 +472,9 @@ def install_command(args: argparse.Namespace) -> int:
     if not args.no_skills:
         skill_source = repo_root / "skills" / "managing-google-workspace"
         for client in clients:
-            custom_target = args.skill_dir.expanduser().resolve() if args.skill_dir else None
+            custom_target = (
+                args.skill_dir.expanduser().resolve() if args.skill_dir else None
+            )
             status = install_client_skills(
                 skill_source,
                 client,
