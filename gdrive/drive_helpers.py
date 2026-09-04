@@ -27,7 +27,7 @@ from core.http_utils import (
     redact_url as _redact_url,
     ssrf_safe_stream as _ssrf_safe_stream,
 )
-from core.utils import validate_file_path
+from core.utils import UserInputError, validate_file_path
 
 logger = logging.getLogger(__name__)
 
@@ -201,19 +201,23 @@ def format_permission_info(permission: Dict[str, Any]) -> str:
     role = permission.get("role", "unknown")
     perm_id = permission.get("id", "")
 
+    # emailAddress and domain are principal-chosen text rendered into a
+    # line-oriented block — the same untrusted-text class as the file name in
+    # _format_drive_file_line, and this function is called from
+    # get_drive_file_permissions.
     if perm_type == "anyone":
         base = f"Anyone with the link ({role}) [id: {perm_id}]"
     elif perm_type == "user":
-        email = permission.get("emailAddress", "unknown")
+        email = _sanitize_drive_text(permission.get("emailAddress", "unknown"))
         base = f"User: {email} ({role}) [id: {perm_id}]"
     elif perm_type == "group":
-        email = permission.get("emailAddress", "unknown")
+        email = _sanitize_drive_text(permission.get("emailAddress", "unknown"))
         base = f"Group: {email} ({role}) [id: {perm_id}]"
     elif perm_type == "domain":
-        domain = permission.get("domain", "unknown")
+        domain = _sanitize_drive_text(permission.get("domain", "unknown"))
         base = f"Domain: {domain} ({role}) [id: {perm_id}]"
     else:
-        base = f"{perm_type} ({role}) [id: {perm_id}]"
+        base = f"{_sanitize_drive_text(perm_type)} ({role}) [id: {perm_id}]"
 
     extras = []
     if permission.get("expirationTime"):
@@ -423,6 +427,93 @@ def resolve_file_type_mime(file_type: str) -> str:
             f"'application/pdf') or use one of the friendly names: {valid}"
         )
     return FILE_TYPE_MIME_MAP[lower]
+
+
+# Friendly recency sort names accepted by `list_recent_files`, mapped to the
+# Drive API `orderBy` key they resolve to. Names are matched case-insensitively
+# after stripping '_' and '-', so 'lastModifiedByMe', 'last_modified_by_me' and
+# 'last-modified-by-me' are all the same key.
+#
+# The first three NAMES are the three sort orders Google's own first-party Drive
+# MCP server accepts, so those values carry over; the rest are our additions.
+# Only the values match — that server takes camelCase `orderBy`/`pageSize`/
+# `pageToken` and silently falls back to `recency` on an unsupported value,
+# whereas this tool takes snake_case and raises. It is not a drop-in caller swap.
+RECENCY_ORDER_BY_MAP: Dict[str, str] = {
+    # Google's first-party Drive MCP names
+    "recency": "recency",
+    "lastmodified": "modifiedTime",
+    "lastmodifiedbyme": "modifiedByMeTime",
+    # Our aliases over the same Drive keys
+    "modified": "modifiedTime",
+    "modifiedtime": "modifiedTime",
+    "modifiedbyme": "modifiedByMeTime",
+    "modifiedbymetime": "modifiedByMeTime",
+    "lastviewedbyme": "viewedByMeTime",
+    "viewedbyme": "viewedByMeTime",
+    "viewedbymetime": "viewedByMeTime",
+    "created": "createdTime",
+    "createdtime": "createdTime",
+    "sharedwithme": "sharedWithMeTime",
+    "sharedwithmetime": "sharedWithMeTime",
+}
+
+
+def resolve_recency_order_by(order_by: str) -> str:
+    """
+    Resolve a friendly recency sort name to a descending Drive API `orderBy` clause.
+
+    Drive's `orderBy` sorts ascending by default, which for a time key means
+    oldest-first — the opposite of what "recent" means. Every clause returned
+    here is therefore explicitly suffixed with ' desc'.
+
+    Because every result is descending anyway, a redundant trailing 'desc' the
+    caller wrote themselves is accepted and stripped rather than rejected. The
+    rest of the Drive docs — and this tool's own output header — spell sorts as
+    'modifiedTime desc', so echoing that form back must not be an error.
+    An explicit ' asc' IS rejected: this tool cannot honour it, and silently
+    returning the opposite order would be worse than refusing.
+
+    Args:
+        order_by: A friendly name ('recency', 'lastModified', 'lastModifiedByMe',
+                  'createdTime', …), optionally with a redundant ' desc' suffix.
+                  Case-, underscore- and hyphen-insensitive.
+
+    Returns:
+        str: A Drive API orderBy clause, e.g. 'modifiedTime desc'.
+
+    Raises:
+        UserInputError: If the value is empty, requests ascending order, or is
+                        not a recognised sort name. UserInputError (not ValueError)
+                        so handle_http_errors logs it as a caller mistake at WARNING
+                        rather than an unexpected server fault with a traceback.
+    """
+    normalized = order_by.strip()
+    if not normalized:
+        raise UserInputError("order_by cannot be empty.")
+
+    # Reject ascending explicitly rather than silently returning descending.
+    if normalized.lower().split()[-1] == "asc":
+        raise UserInputError(
+            f"list_recent_files cannot sort ascending ('{order_by}'); it always returns "
+            f"most-recent-first. For ascending order use search_drive_files or "
+            f"list_drive_items, whose order_by is passed to Drive verbatim."
+        )
+
+    # Drop a redundant trailing 'desc' — every mapping here is already descending.
+    parts = normalized.split()
+    if len(parts) > 1 and parts[-1].lower() == "desc":
+        normalized = " ".join(parts[:-1])
+
+    key = normalized.lower().replace("_", "").replace("-", "").replace(" ", "")
+    if key not in RECENCY_ORDER_BY_MAP:
+        valid = ", ".join(sorted(RECENCY_ORDER_BY_MAP.keys()))
+        raise UserInputError(
+            f"Unknown order_by '{order_by}' for list_recent_files. Use one of: {valid}. "
+            f"For arbitrary multi-key sorts (e.g. 'folder,name'), use search_drive_files "
+            f"or list_drive_items, whose order_by is passed to Drive verbatim."
+        )
+    return f"{RECENCY_ORDER_BY_MAP[key]} desc"
 
 
 BASE_SHORTCUT_FIELDS = (
@@ -931,3 +1022,128 @@ async def _resolve_import_media(
         chunksize=UPLOAD_CHUNK_SIZE_BYTES,
     )
     return media, source_mime_type, remote_file_data
+
+
+# Every character str.splitlines() treats as a line break. Enumerated rather
+# than derived from `ch < " "`, because NEL, LINE SEPARATOR and PARAGRAPH
+# SEPARATOR are all ABOVE U+0020 and silently defeated an earlier version of
+# this guard — it claimed "one record stays one line" while three characters
+# broke the line anyway.
+_LINE_BREAK_CHARS = "\n\r\v\f\x1c\x1d\x1e\x85  "
+
+
+def _sanitize_drive_text(value: Any) -> str:
+    """Flatten Drive-supplied text so it cannot forge result-list structure.
+
+    Anyone who can share a file, a drive, or a comment into the user's Drive
+    chooses the display text that comes back with it. Rendered verbatim into a
+    newline-joined result list, a value containing a line break forges extra
+    `- Name: ...` rows and a fake `nextPageToken:` line, smuggling instructions
+    into agent context. That was demonstrated against this formatter.
+
+    Every line-break and control character becomes a space, so one record
+    cannot become two.
+
+    What this does NOT do, deliberately, so callers don't over-trust it:
+      * It is not an escape. There is no grammar for this output format and
+        nothing parses it, so escaping quotes would buy a visual cue and
+        nothing more — while mangling every legitimate name containing a quote
+        or a backslash. Removed for that reason.
+      * It does not make the text safe. Prompt injection is prose: "ignore
+        previous instructions" needs no special character and passes straight
+        through. Treat all of this content as untrusted input to the model.
+
+    Its one guarantee is structural: the result cannot contain a line break.
+    """
+    text = "" if value is None else str(value)
+    return "".join(
+        " " if (ch < " " or ch == "\x7f" or ch in _LINE_BREAK_CHARS) else ch
+        for ch in text
+    )
+
+
+def _as_single_line(line: str) -> str:
+    """Enforce one-record-one-line on an ASSEMBLED result line.
+
+    Applied to the finished string rather than to a hand-picked list of fields.
+    A per-field guard is only as good as its field list, and two independent
+    reviews demonstrated forgery through fields that list omitted (mimeType,
+    and the shared-drive name). Enforcing at the line boundary makes the
+    invariant hold for every field, including ones added later.
+    """
+    return _sanitize_drive_text(line)
+
+
+def _format_drive_file_line(
+    item: Dict[str, Any], detailed: bool, include_drive_id: bool = False
+) -> str:
+    """Render one files.list entry as a result line.
+
+    Shared by `search_drive_files`, `list_drive_items` and `list_recent_files`
+    so their output stays identical field-for-field.
+
+    The anyone-with-link clause is data-driven: it appears only when the caller
+    asked `build_drive_list_params` for `include_permissions`, since otherwise
+    the response carries no `permissions` field to read.
+
+    Args:
+        item: A single entry from a Drive files.list response.
+        detailed: When True, include size, timestamps, last editor and
+                  anyone-with-link role. When False, emit only name/ID/type.
+        include_drive_id: When True, append the shared drive ID.
+                          `list_drive_items` and `list_recent_files` pass True;
+                          `search_drive_files` passes False, preserving its
+                          pre-existing output.
+
+    Returns:
+        str: A single formatted result line (no trailing newline).
+    """
+    name = _sanitize_drive_text(item["name"])
+    if not detailed:
+        return _as_single_line(
+            f'- Name: "{name}" (ID: {item["id"]}, Type: {item["mimeType"]})'
+        )
+
+    size_str = f", Size: {item.get('size', 'N/A')}" if "size" in item else ""
+    created_str = f", Created: {item['createdTime']}" if item.get("createdTime") else ""
+
+    # Last modifying user (not available for all files)
+    lmu = item.get("lastModifyingUser")
+    if lmu:
+        lmu_name = _sanitize_drive_text(lmu.get("displayName", ""))
+        lmu_email = _sanitize_drive_text(lmu.get("emailAddress", ""))
+        if lmu_name and lmu_email:
+            last_edited_by_str = f", Last Edited By: {lmu_name} <{lmu_email}>"
+        elif lmu_name:
+            last_edited_by_str = f", Last Edited By: {lmu_name}"
+        elif lmu_email:
+            last_edited_by_str = f", Last Edited By: {lmu_email}"
+        else:
+            last_edited_by_str = ""
+    else:
+        last_edited_by_str = ""
+
+    # Anyone-with-link permission role (reader/commenter/writer)
+    anyone_role_str = ""
+    for perm in item.get("permissions", []):
+        if perm.get("type") == "anyone":
+            anyone_role_str = f", Anyone with link: {perm.get('role', 'unknown')}"
+            break
+
+    drive_id_str = (
+        f", Drive ID: {item['driveId']}"
+        if include_drive_id and item.get("driveId")
+        else ""
+    )
+
+    # TODO: "Created By" (original file creator) is not included here.
+    # For Shared Drive files the `owners` field is always empty — the drive
+    # owns the file.  True creator attribution requires fetching revision 1
+    # via files/{id}/revisions and reading its lastModifyingUser.  That adds
+    # one API call per file and should be a separate follow-up.
+    return _as_single_line(
+        f'- Name: "{name}" (ID: {item["id"]}, Type: {item["mimeType"]}{size_str}'
+        f"{created_str}, Modified: {item.get('modifiedTime', 'N/A')}"
+        f"{last_edited_by_str}{anyone_role_str}{drive_id_str})"
+        f" Link: {item.get('webViewLink', '#')}"
+    )

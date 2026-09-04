@@ -3,7 +3,7 @@
 MCP tools for Google Drive file management, search, content retrieval, and permission control. All tools require `user_google_email` (string, required).
 
 ## Contents
-- Search & Browse: search_drive_files, list_drive_items
+- Search & Browse: search_drive_files, list_drive_items, list_recent_files
 - Content & Download: get_drive_file_content, get_drive_file_download_url
 - Create & Modify: create_drive_file, create_drive_folder, copy_drive_file, update_drive_file
 - Permissions & Sharing: set_drive_file_permissions, manage_drive_access, get_drive_file_permissions, get_drive_shareable_link, check_drive_file_public_access
@@ -46,6 +46,49 @@ List files and folders in a specific folder.
 | file_type | string | no | | Same friendly names as search_drive_files |
 | detailed | boolean | no | true | Include size, modified time, and link |
 | order_by | string | no | | Sort order (see Sort Order below) |
+
+### list_recent_files
+List the user's most recent files, newest first, with no query needed. Use this whenever recency *is* the question -- "what have I been working on?", "what did I open recently?", "show me my latest docs". For anything with search terms use `search_drive_files`; for the contents of one folder use `list_drive_items`.
+
+This is also the correct tool for recent activity in **Shared Drives**, where owner-based queries return nothing (see Shared Drives Limitations below).
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| user_google_email | string | yes | | |
+| order_by | string | no | recency | Recency signal to sort on, always descending (see Recency Sort Names below) |
+| page_size | integer | no | 10 | Max results to return |
+| page_token | any | no | | Pagination token. **Pass the same `order_by` on every page** -- the token does not carry it, and omitting it silently reverts to `recency` mid-sequence |
+| file_type | string | no | | Same friendly names as search_drive_files |
+| drive_id | string | no | | Shared drive ID to scope listing |
+| include_items_from_all_drives | boolean | no | true | Include shared drive items when no drive_id set |
+| corpora | string | no | | `user`, `domain`, `drive`, or `allDrives`. Defaults to `drive` when drive_id is set |
+| detailed | boolean | no | true | Include size, creation/modification times, last editor, shared drive ID, and link |
+| include_trashed | boolean | no | false | Include files in the trash |
+
+Detailed output includes `Drive ID:` for files that live in a shared drive (same as `list_drive_items`, and unlike `search_drive_files`) -- useful when results span several drives and you need to tell them apart.
+
+**Recency Sort Names** (`order_by`) -- case-, underscore- and hyphen-insensitive, so `lastModifiedByMe`, `last_modified_by_me` and `last-modified-by-me` are the same value:
+
+| Name | Drive key applied | Meaning |
+|------|-------------------|---------|
+| `recency` (default) | `recency desc` | Drive's blended most-recent-activity signal |
+| `lastModified` | `modifiedTime desc` | Last time **anyone** modified the file |
+| `lastModifiedByMe` | `modifiedByMeTime desc` | Last time **this user** modified the file |
+| `lastViewedByMe` | `viewedByMeTime desc` | Last time this user opened the file |
+| `created` | `createdTime desc` | Newest files first. Google advises against `createdTime` on large collections -- prefer `lastModified` there |
+| `sharedWithMe` | `sharedWithMeTime desc` | Most recently shared with this user |
+
+The first three **values** are the three sort orders Google's own first-party Drive MCP server accepts, so those carry over. Only the values match: that server takes camelCase `orderBy` / `pageSize` / `pageToken` and silently falls back to `recency` on an unsupported value, while this tool takes snake_case and raises. It is not a drop-in caller swap.
+
+Every sort is **descending** -- ascending time order is never what "recent" means. A redundant trailing ` desc` is accepted and stripped (`'modifiedTime desc'` works), but an explicit ` asc` raises rather than silently returning the opposite order. An unrecognized name also raises rather than falling back to a default; the error lists every accepted name. For ascending order, or arbitrary multi-key sorts (e.g. `folder,modifiedTime desc,name`), use `search_drive_files` or `list_drive_items`, whose `order_by` is passed to Drive verbatim.
+
+**The sort key is not shown in the output.** Results carry `Created:` and `Modified:` times only, so for `recency`, `lastModifiedByMe`, `lastViewedByMe` and `sharedWithMe` the visible timestamps will appear out of order relative to the sort — the column you can see is not the one the list was sorted on. The header reports the sort *requested*, which is the honest claim: Drive documents that it ignores the requested order for accounts with very large file counts, and does not define where rows missing the sort key land.
+
+`sharedWithMe` and `lastViewedByMe` add a matching query clause so results are restricted to files that actually carry the key. **`lastModifiedByMe` cannot** -- Drive has no `modifiedByMeTime` search term -- so in a large drive where you edited only a few files, that sort ranks many rows that have no such timestamp at all. Prefer `lastViewedByMe` or `recency` unless you specifically need "files I edited".
+
+⚠️ **Do not combine `order_by='sharedWithMe'` with `drive_id`.** Shared drive files are reached through drive membership and are not in your "Shared with me" collection, so the two conditions intersect to nothing and you get `No recent files found` — which looks identical to an empty drive. For recent activity within one shared drive use the default `recency`, or `lastModified`, with `drive_id`.
+
+**No permission data.** Unlike `search_drive_files`, this tool does not request file ACLs, so no "Anyone with link" annotation appears. That is deliberate: an absent annotation would be indistinguishable from "not shared" -- and Drive omits the field entirely for Shared Drive items. Use `get_drive_file_permissions` or `check_drive_file_public_access` when sharing state is the question.
 
 ---
 
@@ -207,13 +250,13 @@ Search for a file by name and check if it has public link sharing enabled.
 
 The `query` parameter of `search_drive_files` uses Google Drive query syntax (e.g. `name contains`, `mimeType =`, `'id' in parents`, `modifiedTime >`, `trashed =`, `sharedWithMe`). Combine with `and`/`or`/`not`.
 
-**Trash:** both `search_drive_files` and `list_drive_items` exclude trashed files by default. To see trashed files, either pass `include_trashed=true` to `search_drive_files` or write an explicit `trashed = true` clause into `query` — an explicit clause always wins over the flag.
+**Trash:** `search_drive_files`, `list_drive_items` and `list_recent_files` all exclude trashed files by default. To see trashed files, pass `include_trashed=true` to `search_drive_files` or `list_recent_files`, or write an explicit `trashed = true` clause into `search_drive_files`'s `query` — an explicit clause always wins over the flag.
 
 ---
 
 ## Sort Order
 
-The `order_by` parameter controls result ordering for `search_drive_files` and `list_drive_items`.
+The `order_by` parameter controls result ordering for `search_drive_files` and `list_drive_items`. These raw Drive keys are passed through verbatim by those two tools. **`list_recent_files` does not accept them** -- it takes a small set of friendly names instead (see Recency Sort Names above).
 
 **Valid sort keys:**
 - `createdTime` - When the file was created
@@ -254,9 +297,10 @@ The `order_by` parameter controls result ordering for `search_drive_files` and `
 - Owner-based queries **DO NOT WORK** in Shared Drives:
   - ❌ `'user@example.com' in owners` - Will not return expected results
   - ❌ `ownedByMe=true` - Will not find files in Shared Drives
-- To find recent files in Shared Drives, use time-based queries instead:
-  - ✅ `modifiedTime > '2026-01-01T00:00:00'` with `order_by='modifiedTime desc'`
-  - ✅ Search by name, type, or content with `order_by='modifiedTime desc'`
+- To find recent files in Shared Drives, do **not** query by owner. Instead:
+  - ✅ `list_recent_files` (with `drive_id` to scope it) -- the direct route, no query needed
+  - ✅ `search_drive_files` with `modifiedTime > '2026-01-01T00:00:00'` and `order_by='modifiedTime desc'` -- when you need a **time window**, which `list_recent_files` does not support
+  - ✅ `search_drive_files` by name, type, or content with `order_by='modifiedTime desc'` -- when you need **search terms** as well as recency
 
 **Other field limitations in Shared Drives:**
 - `permissions` - Not returned directly; use `get_drive_file_permissions` instead
@@ -264,11 +308,13 @@ The `order_by` parameter controls result ordering for `search_drive_files` and `
 - `folderColorRgb` - Individual folder coloring not supported
 - `writersCanShare` - Cannot restrict sharing by role
 
-**Workaround for finding a user's recent activity:**
-Instead of searching by owner, use:
-1. `order_by='modifiedTime desc'` to get most recent files first
-2. Filter by `modifiedTime > 'YYYY-MM-DDTHH:MM:SS'` to limit to recent files
-3. Manually filter results by checking file activity (if needed)
+**Finding a user's recent activity:**
+Use `list_recent_files` -- it needs no query and no owner clause, so it is unaffected by this limitation:
+- `list_recent_files` with `order_by='lastModifiedByMe'` for files **this user** last edited
+- `list_recent_files` with `order_by='recency'` (the default) for general recent activity
+- Add `drive_id` to scope it to one shared drive
+
+Only fall back to a hand-built `search_drive_files` query when you need recency *combined with* search terms — e.g. `name contains 'budget'` plus `order_by='modifiedTime desc'`.
 
 ---
 
@@ -299,7 +345,13 @@ Imports a file (Markdown, DOCX, TXT, HTML, RTF, ODT) into Google Docs format wit
 
 **Shared drives**: Set `drive_id` to scope operations. When `drive_id` is set, `corpora` defaults to `drive`. For folder operations in shared drives, use a folder ID within that drive (or the drive ID itself for root).
 
-**Pagination**: Both `search_drive_files` and `list_drive_items` return a `next_page_token` when more results exist. Pass it back as `page_token` to get the next page. Search results are incomplete without paginating.
+**Pagination**: `search_drive_files`, `list_drive_items` and `list_recent_files` all return a `nextPageToken` line when more results exist. Pass it back as `page_token` to get the next page. Results are incomplete without paginating.
+
+**Choosing a browse tool**: recency only -> `list_recent_files`; search terms -> `search_drive_files`; one folder's contents -> `list_drive_items`.
+
+**No metadata caching in this server**: every Drive listing, search, and metadata tool queries the API on each call, so there is nothing here to refresh or invalidate after a write. Note this says nothing about Drive's own index, which is eventually consistent — a just-created file may not appear in the very next list. If a write succeeded but the file is missing from the next listing, wait and re-list rather than treating the write as failed or retrying it.
+
+The one exception is file *bytes*, not metadata: in HTTP mode `get_drive_file_download_url` saves the downloaded file to server-side attachment storage and returns a URL valid for 1 hour. That stored copy is a snapshot -- if the file changes within the hour, re-run the tool to get a fresh URL rather than reusing the old one.
 
 **Moving files**: Use `update_drive_file` with `add_parents` (destination) and `remove_parents` (source) set together.
 

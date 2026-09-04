@@ -2,7 +2,7 @@
 name: managing-google-workspace
 description: >
   Manages Google Workspace operations across 12 services (Gmail, Drive, Calendar, Docs, Sheets, Slides, Forms, Tasks, Contacts, Chat, Apps Script, Custom Search).
-  Supports MCP tools or CLI via uvx workspace-mcp --cli. Provides tool routing, workflows, and parameter guidance for 114 tools.
+  Supports MCP tools or CLI via uvx workspace-mcp --cli. Provides tool routing, workflows, and parameter guidance for 123 tools.
   Triggers for "check my email", "find a file", "schedule a meeting", "update the spreadsheet", "share a doc",
   "create a presentation", "add a task", "look up a contact", or any mention of Google Workspace services.
 allowed-tools: Bash(uvx workspace-mcp *)
@@ -91,6 +91,7 @@ For parameters: [references/gmail.md](references/gmail.md)
 |------|------|
 | Search files/folders | `search_drive_files` |
 | List items in folder | `list_drive_items` |
+| Recent / "what am I working on" | `list_recent_files` |
 | Read file content | `get_drive_file_content` |
 | Download file | `get_drive_file_download_url` |
 | Create file | `create_drive_file` |
