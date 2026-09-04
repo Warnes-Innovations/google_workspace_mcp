@@ -61,6 +61,22 @@ class OAuthClientRegistryError(ValueError):
     """Raised when the OAuth client registry is malformed."""
 
 
+class OAuthClientResolutionError(ValueError):
+    """Raised when a configured registry can select no client for a request.
+
+    This is deliberately an exception and not a second ``None``. "The registry
+    refused this account" and "no OAuth client is configured at all" are
+    opposite situations that used to share one sentinel, and every caller read
+    it as the second: the refusal fell through to whatever ``client_secret.json``
+    happened to be on disk, authorizing an unmapped account against an
+    arbitrary Cloud project. A sentinel obliges every present and future caller
+    to remember to check; an exception is fail-closed by omission, which is the
+    property that was missing.
+
+    Subclasses ``ValueError`` so existing handlers keep working.
+    """
+
+
 @dataclass(frozen=True)
 class OAuthClient:
     """One OAuth client, i.e. one Google Cloud project's credentials."""

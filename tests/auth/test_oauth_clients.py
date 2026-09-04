@@ -7,6 +7,7 @@ import pytest
 
 from auth.google_auth import (
     check_client_secrets,
+    create_oauth_flow,
     load_client_secrets_from_env,
     resolve_oauth_client,
 )
@@ -15,6 +16,7 @@ from auth.oauth_types import OAuthVersionDetectionParams
 from auth.oauth_clients import (
     OAuthClient,
     OAuthClientRegistryError,
+    OAuthClientResolutionError,
     load_registry_from_env,
     parse_registry_document,
 )
@@ -638,3 +640,120 @@ def test_check_client_secrets_accepts_a_bare_secrets_file(monkeypatch, tmp_path)
     monkeypatch.setattr("auth.google_auth.CONFIG_CLIENT_SECRETS_PATH", str(secrets))
 
     assert check_client_secrets() is None
+
+
+# --------------------------------------------------------------------------
+# Refusal is fatal: an unresolvable account must never reach the file
+# --------------------------------------------------------------------------
+
+
+ON_DISK_SECRETS = {
+    "installed": {
+        "client_id": "on-disk-id",
+        "client_secret": "on-disk-secret",
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+    }
+}
+
+
+@pytest.fixture
+def secrets_file_on_disk(monkeypatch, tmp_path):
+    """A perfectly valid client_secret.json sitting where the fallback looks.
+
+    Its presence is the whole point: the fail-open path was silent precisely
+    because the file exists on a real deployment and the flow it produced
+    looked fine right up until Google rejected it.
+    """
+    path = tmp_path / "client_secret.json"
+    path.write_text(json.dumps(ON_DISK_SECRETS))
+    monkeypatch.setattr("auth.google_auth.CONFIG_CLIENT_SECRETS_PATH", str(path))
+    return path
+
+
+@pytest.fixture
+def no_default_registry_config(monkeypatch):
+    """Point auth.google_auth at a multi-client registry with no default."""
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENTS", json.dumps(NO_DEFAULT_DOC))
+    cfg = OAuthConfig()
+    monkeypatch.setattr("auth.google_auth.get_oauth_config", lambda: cfg)
+    return cfg
+
+
+def test_unresolvable_account_raises_instead_of_returning_none(
+    no_default_registry_config,
+):
+    # "The registry refused this account" and "the caller did not specify one"
+    # shared the None sentinel, and every caller read it as the second.
+    with pytest.raises(OAuthClientResolutionError) as excinfo:
+        resolve_oauth_client(user_google_email="stranger@nowhere.test")
+
+    message = str(excinfo.value)
+    assert "stranger@nowhere.test" in message
+    assert "personal" in message and "work" in message  # what IS registered
+
+
+def test_resolution_with_no_account_and_no_default_raises(no_default_registry_config):
+    # This is the callback's shape: a pre-multi-client state entry carries no
+    # client_key and the callback has no email yet, so nothing selects a client.
+    with pytest.raises(OAuthClientResolutionError):
+        resolve_oauth_client()
+
+
+def test_resolution_still_returns_none_when_nothing_is_configured(monkeypatch):
+    # The surviving None has exactly one meaning: no registry at all, so the
+    # caller's client-secrets-file fallback is the intended path.
+    cfg = OAuthConfig()
+    monkeypatch.setattr("auth.google_auth.get_oauth_config", lambda: cfg)
+
+    assert resolve_oauth_client(user_google_email="anyone@anywhere.test") is None
+
+
+def test_unresolvable_account_never_reaches_the_client_secrets_file(
+    no_default_registry_config, secrets_file_on_disk
+):
+    with pytest.raises(OAuthClientResolutionError) as excinfo:
+        create_oauth_flow(
+            scopes=["https://www.googleapis.com/auth/userinfo.email"],
+            redirect_uri="http://localhost:8000/oauth2callback",
+            user_google_email="stranger@nowhere.test",
+        )
+
+    message = str(excinfo.value)
+    # The error must name the real cause, not a missing file: the file is
+    # right there, and blaming it sends the operator to fix the wrong thing.
+    assert "stranger@nowhere.test" in message
+    assert "not found" not in message
+    assert str(secrets_file_on_disk) not in message
+
+
+def test_callback_shaped_flow_with_no_client_key_never_reaches_the_file(
+    no_default_registry_config, secrets_file_on_disk
+):
+    # The callback path had no guard at all. A state entry written before
+    # multi-client support has client_key=None, so this is exactly the call
+    # handle_auth_callback makes for one.
+    with pytest.raises(OAuthClientResolutionError):
+        create_oauth_flow(
+            scopes=["https://www.googleapis.com/auth/userinfo.email"],
+            redirect_uri="http://localhost:8000/oauth2callback",
+            state="state-abc",
+            code_verifier="verifier",
+            autogenerate_code_verifier=False,
+            client_key=None,
+        )
+
+
+def test_file_fallback_still_works_when_no_registry_is_configured(
+    monkeypatch, secrets_file_on_disk
+):
+    # The fix must not break the single-client, file-only deployment.
+    cfg = OAuthConfig()
+    monkeypatch.setattr("auth.google_auth.get_oauth_config", lambda: cfg)
+
+    flow = create_oauth_flow(
+        scopes=["https://www.googleapis.com/auth/userinfo.email"],
+        redirect_uri="http://localhost:8000/oauth2callback",
+    )
+
+    assert flow.client_config["client_id"] == "on-disk-id"

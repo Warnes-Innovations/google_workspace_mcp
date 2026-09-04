@@ -23,7 +23,11 @@ from auth.scopes import SCOPES, get_current_scopes, has_required_scopes  # noqa
 from auth.oauth21_session_store import get_oauth21_session_store
 from auth.credential_store import get_credential_store
 from auth.gateway_identity import normalize_principal_email
-from auth.oauth_clients import OAuthClient, load_registry_from_env
+from auth.oauth_clients import (
+    OAuthClient,
+    OAuthClientResolutionError,
+    load_registry_from_env,
+)
 from auth.oauth_config import (
     get_oauth_config,
     is_oauth21_enabled,
@@ -400,8 +404,21 @@ def resolve_oauth_client(
     exactly and a miss is an error rather than a fallback to the default.
     Otherwise the account's email selects the client via the registry.
 
+    Returns:
+        The selected client, or None with exactly ONE meaning: no OAuth client
+        registry is configured at all, so the caller's client-secrets-file
+        fallback is the intended single-client path.
+
+        None used to mean two opposite things — "the caller specified nothing"
+        and "the registry refused this account" — and every caller read it as
+        the first, falling through to whatever ``client_secret.json`` was on
+        disk. Refusal is now an exception, which is fail-closed by omission
+        rather than depending on each caller remembering to check.
+
     Raises:
-        ValueError: if ``client_key`` names a client that is not registered.
+        OAuthClientResolutionError: if ``client_key`` names a client that is
+            not registered, or if a registry is configured but can select no
+            client for this request.
     """
     config = get_oauth_config()
 
@@ -412,14 +429,39 @@ def resolve_oauth_client(
             # Cloud project and fail at Google as 'invalid_client', pointing
             # investigation at the token exchange rather than at the config
             # change that actually caused it.
-            raise ValueError(
+            raise OAuthClientResolutionError(
                 f"OAuth client {client_key!r} is no longer registered. The "
                 "authorization was started with a client that has since been "
                 "removed or renamed; restart the authentication flow."
             )
         return client
 
-    return config.get_client_for_email(user_google_email)
+    registry = config.client_registry
+    if registry is None:
+        # Nothing configured at all. Not a refusal — the caller's file
+        # fallback is the supported single-client deployment.
+        return None
+
+    client = config.get_client_for_email(user_google_email)
+    if client is not None:
+        return client
+
+    registered = ", ".join(registry.keys)
+    if user_google_email:
+        raise OAuthClientResolutionError(
+            f"No OAuth client is registered for '{user_google_email}'. The "
+            f"registry defines {registered}, but maps neither that address "
+            "nor its domain to one and declares no default client. Add it to "
+            "'emails' or 'domains', or set 'default'. Refusing rather than "
+            "authorizing this account against an arbitrary Cloud project."
+        )
+    raise OAuthClientResolutionError(
+        "No account was supplied and the OAuth client registry "
+        f"({registered}) declares no default client, so no client can be "
+        "selected. Set 'default' in the registry, or start the flow with an "
+        "account the registry maps. Refusing rather than authorizing against "
+        "an arbitrary Cloud project."
+    )
 
 
 def create_oauth_flow(
@@ -437,6 +479,12 @@ def create_oauth_flow(
     ``client_key`` / ``user_google_email`` select which registered OAuth client
     the flow uses. Both may be omitted, which selects the default client and
     reproduces the single-client behaviour.
+
+    Raises:
+        OAuthClientResolutionError: if a registry is configured but can select
+            no client for this request. The client secrets file is reached
+            only when no registry exists at all.
+        FileNotFoundError: if there is no registry and no client secrets file.
     """
     client = resolve_oauth_client(
         client_key=client_key, user_google_email=user_google_email
@@ -465,7 +513,22 @@ def create_oauth_flow(
         logger.debug("Created OAuth flow from environment variables")
         return flow
 
-    # Fall back to file-based config
+    if client is not None:
+        # Second, independent layer. resolve_oauth_client has already refused
+        # every request it cannot serve, so a resolved client that yields no
+        # usable config is a bug — and still not a reason to authorize this
+        # account against whatever file happens to be on disk. The two checks
+        # are deliberately redundant: this one holds even if resolution is
+        # later relaxed.
+        raise OAuthClientResolutionError(
+            f"OAuth client {client.key!r} was resolved but produced no usable "
+            "client configuration. Refusing to fall back to "
+            f"{CONFIG_CLIENT_SECRETS_PATH}, which belongs to a different "
+            "Cloud project."
+        )
+
+    # No registry configured at all: the client secrets file is the intended
+    # single-client path.
     if not os.path.exists(CONFIG_CLIENT_SECRETS_PATH):
         raise FileNotFoundError(
             f"OAuth client secrets file not found at {CONFIG_CLIENT_SECRETS_PATH} and no environment variables set"
@@ -658,7 +721,12 @@ async def start_auth_flow(
         # against the same client.
         oauth_client = resolve_oauth_client(user_google_email=user_google_email)
         if oauth_client is None and get_oauth_config().has_multiple_clients():
-            raise ValueError(
+            # Second, independent layer: resolve_oauth_client now raises for
+            # this case, so reaching here means resolution returned None while
+            # a multi-client registry exists — a contradiction. Kept rather
+            # than deleted so the fail-closed property does not rest on a
+            # single check.
+            raise OAuthClientResolutionError(
                 f"No OAuth client is configured for '{user_google_email}'. Map its "
                 "address or domain in the OAuth client registry, or set a default "
                 "client."
@@ -894,8 +962,16 @@ async def handle_auth_callback(
 
         # The token exchange must use the same OAuth client that issued the
         # authorization URL. State entries written before multi-client support
-        # carry no client_key; those fall through to the default client, which
-        # is what issued them.
+        # carry no client_key, so resolution falls back to the registry's
+        # default — correct for those, since a pre-upgrade state can only have
+        # been issued by a single-client deployment.
+        #
+        # It does NOT fall through to whatever client_secret.json is on disk.
+        # If the registry has since grown several clients and no default,
+        # create_oauth_flow raises OAuthClientResolutionError rather than
+        # exchanging the code against an arbitrary Cloud project. That is a
+        # legible failure ("restart the flow") instead of a credential issued
+        # by the wrong project.
         flow = create_oauth_flow(
             scopes=scopes,
             redirect_uri=redirect_uri,
