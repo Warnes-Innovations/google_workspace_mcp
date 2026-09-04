@@ -86,12 +86,32 @@ _SUPPORTED_TEXT_CHOICE_NAMESPACES = {
 # as though the tool had reported it. Demonstrated against these formatters,
 # not theorised.
 #
-# NOTE (dedupe me): ``gdrive/drive_helpers.py`` carries a private twin of these
-# two functions (``_sanitize_drive_text`` / ``_as_single_line``), written
-# concurrently on another branch. They are intentionally identical in
-# behaviour. Once both branches land, gdrive should import from here and its
-# twin should be deleted -- so a later reader dedupes deliberately rather than
-# discovering the duplication by accident, and so the copies cannot drift.
+# SCOPE, as of THIS branch -- stated because the previous version of this note
+# asserted the opposite and would have read as coverage that does not exist:
+#
+#   * ``gdrive/`` is NOT guarded here. Verified by grep on this branch: zero
+#     call sites of either function, and no private equivalent, in
+#     gdrive/__init__.py, gdrive/drive_helpers.py or gdrive/drive_tools.py.
+#     Nothing in this package's output is covered by anything in this module.
+#   * ``origin/main`` HAS a private twin -- ``_sanitize_drive_text`` and
+#     ``_as_single_line``, defined at gdrive/drive_helpers.py:1035 and :1065 --
+#     used across drive_helpers.py and drive_tools.py. That branch's
+#     core/utils.py has NEITHER of the two functions below; the work was done
+#     there privately to gdrive and here shared in core.
+#
+# So the duplication the old note described is real, but it lives across two
+# branches rather than inside this tree, and the direction of the gap is the
+# opposite of what it implied: on THIS branch gdrive is wholly unguarded.
+#
+# DEDUPE ME on merge. Whichever way the merge resolves, gdrive should end up
+# importing ``sanitize_display_text`` / ``as_single_line`` from here and its
+# private twin should be deleted -- so the two copies cannot drift, and so a
+# later reader dedupes deliberately rather than discovering it by accident.
+# Until that happens, do not read this module as evidence that gdrive output is
+# guarded on this branch. It is not. gdrive/ is owned by another session and is
+# deliberately untouched here.
+#
+# tests/test_guard_coverage.py::PACKAGES omits gdrive for the same reason.
 # --------------------------------------------------------------------------
 
 # Every character str.splitlines() treats as a line break. Enumerated rather
