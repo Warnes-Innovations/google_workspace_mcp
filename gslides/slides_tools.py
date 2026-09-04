@@ -309,23 +309,41 @@ async def get_presentation(
             logger.warning(f"Failed to extract text from the slide {slide_id}: {e}")
             slide_text = f"<failed to extract text: {type(e)}, {e}>"
 
-        slides_info.append(
-            f"  Slide {i}: ID {slide_id}, {len(page_elements)} element(s), text: {slide_text if slide_text else 'empty'}"
+        # The guard covers the row's own fields (`slide_id` is read back from
+        # the API) but stops before `slide_text`, which is deliberately
+        # multi-line: it is already a run of individually-guarded "    > " rows.
+        slide_head = as_single_line(
+            f"  Slide {i}: ID {slide_id}, {len(page_elements)} element(s), text:"
         )
+        slides_info.append(f"{slide_head} {slide_text if slide_text else 'empty'}")
         # The unfiltered presentations.get response already carries each slide's
         # notesPage, so reporting notes costs no extra API call.
         if include_speaker_notes:
             slides_info.extend(_describe_speaker_notes(slide))
 
-    confirmation_message = f"""Presentation Details for {user_google_email}:
-- Title: {title}
-- Presentation ID: {presentation_id}
-- URL: https://docs.google.com/presentation/d/{presentation_id}/edit
-- Total Slides: {len(slides)}
-- Page Size: {page_size.get("width", {}).get("magnitude", "Unknown")} x {page_size.get("height", {}).get("magnitude", "Unknown")} {page_size.get("width", {}).get("unit", "")}
-
-Slides Breakdown:
-{chr(10).join(slides_info) if slides_info else "  No slides found"}"""
+    width = page_size.get("width", {})
+    height = page_size.get("height", {})
+    page_size_row = (
+        f"- Page Size: {width.get('magnitude', 'Unknown')} x "
+        f"{height.get('magnitude', 'Unknown')} {width.get('unit', '')}"
+    )
+    confirmation_message = "\n".join(
+        [
+            as_single_line(line)
+            for line in (
+                f"Presentation Details for {user_google_email}:",
+                f"- Title: {title}",
+                f"- Presentation ID: {presentation_id}",
+                f"- URL: https://docs.google.com/presentation/d/{presentation_id}/edit",
+                f"- Total Slides: {len(slides)}",
+                page_size_row,
+                "",
+                "Slides Breakdown:",
+            )
+        ]
+        # Already individually guarded, and intentionally multi-line.
+        + [chr(10).join(slides_info) if slides_info else "  No slides found"]
+    )
 
     logger.info(f"Presentation retrieved successfully for {user_google_email}")
     return confirmation_message

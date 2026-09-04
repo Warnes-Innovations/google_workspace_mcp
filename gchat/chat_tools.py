@@ -753,13 +753,14 @@ async def download_chat_attachment(
     if is_stateless_mode():
         b64_preview = base64.urlsafe_b64encode(file_bytes).decode("utf-8")[:100]
         return "\n".join(
-            [
+            as_single_line(line)
+            for line in (
                 f"Attachment downloaded: {filename} ({content_type})",
                 f"Size: {size_kb:.1f} KB ({size_bytes} bytes)",
                 "",
                 "Stateless mode: File storage disabled.",
                 f"Base64 preview: {b64_preview}...",
-            ]
+            )
         )
 
     # Save to local disk
@@ -772,21 +773,28 @@ async def download_chat_attachment(
         base64_data=b64_data, filename=filename, mime_type=content_type
     )
 
+    # Blank rows are their own list elements rather than a leading break on the
+    # next one, so the guard cannot flatten them back into a space.
     result_lines = [
-        f"Attachment downloaded: {filename}",
-        f"Type: {content_type}",
-        f"Size: {size_kb:.1f} KB ({size_bytes} bytes)",
+        as_single_line(f"Attachment downloaded: {filename}"),
+        as_single_line(f"Type: {content_type}"),
+        as_single_line(f"Size: {size_kb:.1f} KB ({size_bytes} bytes)"),
     ]
 
     if get_transport_mode() == "stdio":
-        result_lines.append(f"\nSaved to: {result.path}")
+        result_lines.append("")
+        result_lines.append(as_single_line(f"Saved to: {result.path}"))
+        result_lines.append("")
         result_lines.append(
-            "\nThe file has been saved to disk and can be accessed directly via the file path."
+            "The file has been saved to disk and can be accessed directly "
+            "via the file path."
         )
     else:
         download_url = get_attachment_url(result.file_id)
-        result_lines.append(f"\nDownload URL: {download_url}")
-        result_lines.append("\nThe file will expire after 1 hour.")
+        result_lines.append("")
+        result_lines.append(as_single_line(f"Download URL: {download_url}"))
+        result_lines.append("")
+        result_lines.append("The file will expire after 1 hour.")
 
     logger.info(
         f"[download_chat_attachment] Saved {size_kb:.1f} KB attachment to {result.path}"

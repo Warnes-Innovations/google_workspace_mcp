@@ -157,9 +157,13 @@ async def search_custom(
                 item.get("snippet", "No description available")
             )
 
-            confirmation_message += f"\n{i}. {title}\n"
-            confirmation_message += f"   URL: {link}\n"
-            confirmation_message += f"   Snippet: {snippet}\n"
+            # The line-level guard, not just the per-field one. Both run: a
+            # per-field guard is only as good as its field list, and these
+            # three rows are assembled here rather than in a helper, so a
+            # field added below would otherwise be unguarded by default.
+            confirmation_message += "\n" + as_single_line(f"{i}. {title}") + "\n"
+            confirmation_message += as_single_line(f"   URL: {link}") + "\n"
+            confirmation_message += as_single_line(f"   Snippet: {snippet}") + "\n"
 
             # Add additional metadata if available
             if "pagemap" in item:

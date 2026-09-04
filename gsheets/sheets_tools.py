@@ -473,9 +473,12 @@ async def modify_sheet_values(
                     exc,
                 )
 
-        text_output = (
-            f"Successfully updated range '{range_name}' in spreadsheet {spreadsheet_id} for {user_google_email}. "
-            f"Updated: {updated_cells} cells, {updated_rows} rows, {updated_columns} columns."
+        # Summary row guarded; `detailed_errors_section` is multi-line by design.
+        text_output = as_single_line(
+            f"Successfully updated range '{range_name}' in spreadsheet "
+            f"{spreadsheet_id} for {user_google_email}. "
+            f"Updated: {updated_cells} cells, {updated_rows} rows, "
+            f"{updated_columns} columns."
         )
         text_output += detailed_errors_section
         logger.info(
@@ -975,11 +978,15 @@ async def manage_conditional_formatting(
             sheet_title, new_rules_state, sheet_titles, indent=""
         )
 
+        # The summary row is guarded; `state_text` is a rules section that is
+        # multi-line by design and already guarded per row.
         return "\n".join(
             [
-                f"Added conditional format on '{range_name}' in spreadsheet "
-                f"{spreadsheet_id} for {user_google_email}: "
-                f"{rule_desc}{values_desc}; format: {format_desc}.",
+                as_single_line(
+                    f"Added conditional format on '{range_name}' in spreadsheet "
+                    f"{spreadsheet_id} for {user_google_email}: "
+                    f"{rule_desc}{values_desc}; format: {format_desc}."
+                ),
                 state_text,
             ]
         )
@@ -1161,10 +1168,12 @@ async def manage_conditional_formatting(
 
         return "\n".join(
             [
-                f"Updated conditional format at index {rule_index} on sheet "
-                f"'{sheet_title}' in spreadsheet {spreadsheet_id} "
-                f"for {user_google_email}: "
-                f"{rule_desc}{values_desc}; format: {format_desc}.",
+                as_single_line(
+                    f"Updated conditional format at index {rule_index} on sheet "
+                    f"'{sheet_title}' in spreadsheet {spreadsheet_id} "
+                    f"for {user_google_email}: "
+                    f"{rule_desc}{values_desc}; format: {format_desc}."
+                ),
                 state_text,
             ]
         )
@@ -1216,9 +1225,11 @@ async def manage_conditional_formatting(
 
         return "\n".join(
             [
-                f"Deleted conditional format at index {rule_index} on sheet "
-                f"'{target_sheet_name}' in spreadsheet {spreadsheet_id} "
-                f"for {user_google_email}.",
+                as_single_line(
+                    f"Deleted conditional format at index {rule_index} on sheet "
+                    f"'{target_sheet_name}' in spreadsheet {spreadsheet_id} "
+                    f"for {user_google_email}."
+                ),
                 state_text,
             ]
         )
@@ -1356,7 +1367,9 @@ async def create_sheet(
         # this call never supplied.
         new_title = sanitize_display_text(new_props["title"])
 
-        text_output = (
+        # The line-level guard as well as the per-field one above: this row is
+        # assembled here, so a field added to it later is unguarded by default.
+        text_output = as_single_line(
             f"Successfully duplicated '{source_sheet_name}' to '{new_title}' "
             f"(ID: {new_id}) in spreadsheet {spreadsheet_id} for {user_google_email}."
         )
@@ -1389,7 +1402,12 @@ async def create_sheet(
     sheet_id = sheet_props["sheetId"]
     created_sheet_name = sheet_props.get("title", sheet_name or "Untitled")
 
-    text_output = f"Successfully created sheet '{created_sheet_name}' (ID: {sheet_id}) in spreadsheet {spreadsheet_id} for {user_google_email}."
+    # `created_sheet_name` is read back from the API, not necessarily the name
+    # this call supplied, so it gets the line-level guard like its sibling row.
+    text_output = as_single_line(
+        f"Successfully created sheet '{created_sheet_name}' (ID: {sheet_id}) "
+        f"in spreadsheet {spreadsheet_id} for {user_google_email}."
+    )
 
     logger.info(
         f"Successfully created sheet for {user_google_email}. Sheet ID: {sheet_id}"

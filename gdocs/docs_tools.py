@@ -1021,7 +1021,10 @@ async def insert_doc_image(
         size_info = f" (size: {width or 'auto'}x{height or 'auto'} points)"
 
     link = f"https://docs.google.com/document/d/{document_id}/edit"
-    return f"Inserted {source_description}{size_info} at index {index} in document {document_id}. Link: {link}"
+    return as_single_line(
+        f"Inserted {source_description}{size_info} at index {index} "
+        f"in document {document_id}. Link: {link}"
+    )
 
 
 @server.tool(
@@ -2108,7 +2111,11 @@ async def export_doc_to_pdf(
         elif pdf_parents:
             folder_info = f" in folder {pdf_parents[0]}"
 
-        return f"Successfully exported '{original_name}' to PDF and saved to Drive as '{pdf_filename}' (ID: {pdf_file_id}, {pdf_size:,} bytes){folder_info}. PDF: {pdf_web_link} | Original: {web_view_link}"
+        return as_single_line(
+            f"Successfully exported '{original_name}' to PDF and saved to Drive "
+            f"as '{pdf_filename}' (ID: {pdf_file_id}, {pdf_size:,} bytes)"
+            f"{folder_info}. PDF: {pdf_web_link} | Original: {web_view_link}"
+        )
 
     except Exception as e:
         return f"Error: Failed to upload PDF to Drive: {str(e)}. PDF was generated successfully ({pdf_size:,} bytes) but could not be saved to Drive."

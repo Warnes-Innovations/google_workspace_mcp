@@ -250,11 +250,17 @@ async def get_task_list(
             service.tasklists().get(tasklist=task_list_id).execute
         )
 
-        response = f"""Task List Details for {user_google_email}:
-- Title: {sanitize_display_text(task_list["title"])}
-- ID: {task_list["id"]}
-- Updated: {task_list.get("updated", "N/A")}
-- Self Link: {task_list.get("selfLink", "N/A")}"""
+        title = sanitize_display_text(task_list["title"])
+        response = "\n".join(
+            as_single_line(line)
+            for line in (
+                f"Task List Details for {user_google_email}:",
+                f"- Title: {title}",
+                f"- ID: {task_list['id']}",
+                f"- Updated: {task_list.get('updated', 'N/A')}",
+                f"- Self Link: {task_list.get('selfLink', 'N/A')}",
+            )
+        )
 
         logger.info(f"Retrieved task list {task_list_id} for {user_google_email}")
         return response
@@ -284,11 +290,17 @@ async def _create_task_list_impl(
 
     result = await asyncio.to_thread(service.tasklists().insert(body=body).execute)
 
-    response = f"""Task List Created for {user_google_email}:
-- Title: {sanitize_display_text(result["title"])}
-- ID: {result["id"]}
-- Created: {result.get("updated", "N/A")}
-- Self Link: {result.get("selfLink", "N/A")}"""
+    title = sanitize_display_text(result["title"])
+    response = "\n".join(
+        as_single_line(line)
+        for line in (
+            f"Task List Created for {user_google_email}:",
+            f"- Title: {title}",
+            f"- ID: {result['id']}",
+            f"- Created: {result.get('updated', 'N/A')}",
+            f"- Self Link: {result.get('selfLink', 'N/A')}",
+        )
+    )
 
     logger.info(f"Created task list with ID {result['id']} for {user_google_email}")
     return response
@@ -308,10 +320,16 @@ async def _update_task_list_impl(
         service.tasklists().update(tasklist=task_list_id, body=body).execute
     )
 
-    response = f"""Task List Updated for {user_google_email}:
-- Title: {sanitize_display_text(result["title"])}
-- ID: {result["id"]}
-- Updated: {result.get("updated", "N/A")}"""
+    title = sanitize_display_text(result["title"])
+    response = "\n".join(
+        as_single_line(line)
+        for line in (
+            f"Task List Updated for {user_google_email}:",
+            f"- Title: {title}",
+            f"- ID: {result['id']}",
+            f"- Updated: {result.get('updated', 'N/A')}",
+        )
+    )
 
     logger.info(f"Updated task list {task_list_id} for {user_google_email}")
     return response
@@ -720,11 +738,17 @@ async def get_task(
             service.tasks().get(tasklist=task_list_id, task=task_id).execute
         )
 
-        response = f"""Task Details for {user_google_email}:
-- Title: {sanitize_display_text(task.get("title", "Untitled"))}
-- ID: {task["id"]}
-- Status: {task.get("status", "N/A")}
-- Updated: {task.get("updated", "N/A")}"""
+        title = sanitize_display_text(task.get("title", "Untitled"))
+        response = "\n".join(
+            as_single_line(line)
+            for line in (
+                f"Task Details for {user_google_email}:",
+                f"- Title: {title}",
+                f"- ID: {task['id']}",
+                f"- Status: {task.get('status', 'N/A')}",
+                f"- Updated: {task.get('updated', 'N/A')}",
+            )
+        )
 
         if task.get("due"):
             response += f"\n- Due Date: {task['due']}"
@@ -786,11 +810,17 @@ async def _create_task_impl(
 
     result = await asyncio.to_thread(service.tasks().insert(**params).execute)
 
-    response = f"""Task Created for {user_google_email}:
-- Title: {sanitize_display_text(result["title"])}
-- ID: {result["id"]}
-- Status: {result.get("status", "N/A")}
-- Updated: {result.get("updated", "N/A")}"""
+    title = sanitize_display_text(result["title"])
+    response = "\n".join(
+        as_single_line(line)
+        for line in (
+            f"Task Created for {user_google_email}:",
+            f"- Title: {title}",
+            f"- ID: {result['id']}",
+            f"- Status: {result.get('status', 'N/A')}",
+            f"- Updated: {result.get('updated', 'N/A')}",
+        )
+    )
 
     if result.get("due"):
         response += f"\n- Due Date: {result['due']}"
@@ -845,11 +875,17 @@ async def _update_task_impl(
         service.tasks().update(tasklist=task_list_id, task=task_id, body=body).execute
     )
 
-    response = f"""Task Updated for {user_google_email}:
-- Title: {sanitize_display_text(result["title"])}
-- ID: {result["id"]}
-- Status: {result.get("status", "N/A")}
-- Updated: {result.get("updated", "N/A")}"""
+    title = sanitize_display_text(result["title"])
+    response = "\n".join(
+        as_single_line(line)
+        for line in (
+            f"Task Updated for {user_google_email}:",
+            f"- Title: {title}",
+            f"- ID: {result['id']}",
+            f"- Status: {result.get('status', 'N/A')}",
+            f"- Updated: {result.get('updated', 'N/A')}",
+        )
+    )
 
     if result.get("due"):
         response += f"\n- Due Date: {result['due']}"
@@ -904,11 +940,17 @@ async def _move_task_impl(
 
     result = await asyncio.to_thread(service.tasks().move(**params).execute)
 
-    response = f"""Task Moved for {user_google_email}:
-- Title: {sanitize_display_text(result["title"])}
-- ID: {result["id"]}
-- Status: {result.get("status", "N/A")}
-- Updated: {result.get("updated", "N/A")}"""
+    title = sanitize_display_text(result["title"])
+    response = "\n".join(
+        as_single_line(line)
+        for line in (
+            f"Task Moved for {user_google_email}:",
+            f"- Title: {title}",
+            f"- ID: {result['id']}",
+            f"- Status: {result.get('status', 'N/A')}",
+            f"- Updated: {result.get('updated', 'N/A')}",
+        )
+    )
 
     if result.get("parent"):
         response += f"\n- Parent Task ID: {result['parent']}"

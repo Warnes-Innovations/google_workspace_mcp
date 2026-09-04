@@ -280,17 +280,26 @@ async def get_form(service, user_google_email: str, form_id: str) -> str:
     )
     items_text = json.dumps(serialized_items, indent=2) if serialized_items else "[]"
 
-    result = f"""Form Details for {user_google_email}:
-- Title: "{title}"
-- Description: "{description}"
-- Document Title: "{document_title}"
-- Form ID: {form_id}
-- Edit URL: {edit_url}
-- Responder URL: {responder_url}
-- Items ({len(items)} total):
-{items_summary_text}
-- Items (structured):
-{items_text}"""
+    # The line-level guard on every single-record row, on top of the per-field
+    # sanitizing above. `items_summary_text` and `items_text` are deliberately
+    # NOT flattened: the first is already a list of individually-guarded rows
+    # and the second is a JSON block, both multi-line by design.
+    result = "\n".join(
+        [
+            as_single_line(line)
+            for line in (
+                f"Form Details for {user_google_email}:",
+                f'- Title: "{title}"',
+                f'- Description: "{description}"',
+                f'- Document Title: "{document_title}"',
+                f"- Form ID: {form_id}",
+                f"- Edit URL: {edit_url}",
+                f"- Responder URL: {responder_url}",
+                f"- Items ({len(items)} total):",
+            )
+        ]
+        + [items_summary_text, "- Items (structured):", items_text]
+    )
 
     logger.info(f"Successfully retrieved form for {user_google_email}. ID: {form_id}")
     return result
@@ -404,13 +413,21 @@ async def get_form_response(
 
     answers_text = "\n".join(answer_details) if answer_details else "  No answers found"
 
-    result = f"""Form Response Details for {user_google_email}:
-- Form ID: {form_id}
-- Response ID: {response_id}
-- Created: {create_time}
-- Last Submitted: {last_submitted_time}
-- Answers:
-{answers_text}"""
+    result = "\n".join(
+        [
+            as_single_line(line)
+            for line in (
+                f"Form Response Details for {user_google_email}:",
+                f"- Form ID: {form_id}",
+                f"- Response ID: {response_id}",
+                f"- Created: {create_time}",
+                f"- Last Submitted: {last_submitted_time}",
+                "- Answers:",
+            )
+        ]
+        # Already a list of individually-guarded rows.
+        + [answers_text]
+    )
 
     logger.info(
         f"Successfully retrieved response for {user_google_email}. Response ID: {response_id}"
