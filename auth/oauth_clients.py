@@ -42,7 +42,7 @@ Registry document shape::
 import json
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Mapping, Optional
 
 logger = logging.getLogger(__name__)
@@ -67,7 +67,13 @@ class OAuthClient:
 
     key: str
     client_id: str
-    client_secret: Optional[str] = None
+    # repr=False, not merely "call describe() instead": the generated repr is
+    # what "%r" logging, f-strings, container reprs and tracebacks-with-locals
+    # all reach for, and none of those call describe(). The secret is excluded
+    # from the repr so there is no rendering of this object that leaks it.
+    # client_id stays visible — it is not a credential (it is published in
+    # every authorization URL) and it is what makes a log line diagnosable.
+    client_secret: Optional[str] = field(default=None, repr=False)
 
     @property
     def is_public(self) -> bool:

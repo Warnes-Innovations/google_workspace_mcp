@@ -13,7 +13,7 @@ import os
 from typing import Dict, Optional, Any, Tuple, Callable, IO
 from threading import RLock
 from datetime import datetime, timedelta, timezone
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 try:
     import fcntl
@@ -108,7 +108,11 @@ class SessionContext:
 
     session_id: Optional[str] = None
     user_id: Optional[str] = None
-    auth_context: Optional[Any] = None
+    # Holds the request's AccessToken, whose own repr renders the bearer token.
+    # Excluded from this dataclass's repr for the same reason as
+    # auth.oauth_clients.OAuthClient.client_secret: a container's repr is how a
+    # credential reaches a log line or a traceback nobody meant to widen.
+    auth_context: Optional[Any] = field(default=None, repr=False)
     request: Optional[Any] = None
     metadata: Dict[str, Any] = None
     issuer: Optional[str] = None

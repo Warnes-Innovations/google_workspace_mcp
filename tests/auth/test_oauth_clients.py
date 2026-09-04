@@ -5,7 +5,8 @@ import json
 import pytest
 
 from auth.google_auth import load_client_secrets_from_env, resolve_oauth_client
-from auth.oauth21_session_store import OAuth21SessionStore
+from auth.oauth21_session_store import OAuth21SessionStore, SessionContext
+from auth.oauth_types import OAuthVersionDetectionParams
 from auth.oauth_clients import (
     OAuthClient,
     OAuthClientRegistryError,
@@ -113,6 +114,49 @@ def test_client_describe_never_leaks_the_secret():
 
     assert "s3cr3t" not in description
     assert "work" in description
+
+
+def test_client_repr_never_leaks_the_secret():
+    # describe() is only reached by code that chose to call it. The dataclass
+    # repr is reached by everything else: "%r" logging, an f-string, a
+    # traceback rendered with locals, or the repr of any container holding the
+    # client. A secret that is safe in one and cleartext in the other is not
+    # protected at all.
+    client = OAuthClient(key="work", client_id="work-id", client_secret="s3cr3t")
+
+    assert "s3cr3t" not in repr(client)
+    assert "s3cr3t" not in str(client)
+    assert "s3cr3t" not in f"{client}"
+    assert "s3cr3t" not in f"{client!r}"
+    # Containers render their members with repr(), so this is the logging path
+    # that matters in practice.
+    assert "s3cr3t" not in repr({"clients": [client]})
+    assert "s3cr3t" not in repr(parse_registry_document(THREE_CLIENT_DOC).get("work"))
+    # Still diagnosable: the key identifies which client without exposing it.
+    assert "work" in repr(client)
+
+
+def test_sibling_credential_dataclasses_keep_secrets_out_of_repr():
+    # Bug-class sweep for the same defect: a dataclass field holding a
+    # credential with the generated repr left live. These two were found by
+    # grepping every @dataclass in the tree for credential-bearing fields.
+    detection = OAuthVersionDetectionParams(
+        client_id="public-client-id",
+        client_secret="detection-secret",
+        code_verifier="pkce-verifier",
+    )
+    rendered = repr(detection)
+    assert "detection-secret" not in rendered
+    assert "pkce-verifier" not in rendered
+    assert "public-client-id" in rendered
+
+    class _FakeAccessToken:
+        def __repr__(self):
+            return "AccessToken(token='bearer-token-value')"
+
+    context = SessionContext(session_id="s1", auth_context=_FakeAccessToken())
+    assert "bearer-token-value" not in repr(context)
+    assert "s1" in repr(context)
 
 
 # --------------------------------------------------------------------------
