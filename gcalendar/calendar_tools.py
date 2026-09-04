@@ -18,7 +18,12 @@ from googleapiclient.errors import HttpError
 from googleapiclient.discovery import build
 
 from auth.service_decorator import require_google_service
-from core.utils import handle_http_errors, StringList
+from core.utils import (
+    as_single_line,
+    handle_http_errors,
+    sanitize_display_text,
+    StringList,
+)
 from gcalendar.calendar_helpers import (
     _format_event_detail_lines,
     _format_event_time,
@@ -381,7 +386,10 @@ async def list_calendars(service, user_google_email: str) -> str:
         return f"No calendars found for {user_google_email}."
 
     calendars_summary_list = [
-        f'- "{cal.get("summary", "No Summary")}"{" (Primary)" if cal.get("primary") else ""} (ID: {cal["id"]})'
+        as_single_line(
+            f'- "{cal.get("summary", "No Summary")}'
+            f'"{" (Primary)" if cal.get("primary") else ""} (ID: {cal["id"]})'
+        )
         for cal in items
     ]
     text_output = (
@@ -516,7 +524,7 @@ async def get_events(
     # Handle returning detailed output for a single event when requested
     if event_id and detailed:
         item = items[0]
-        summary = item.get("summary", "No Title")
+        summary = sanitize_display_text(item.get("summary", "No Title"))
         start = _format_event_time(item, "start")
         end = _format_event_time(item, "end")
         link = item.get("htmlLink", "No Link")
@@ -539,7 +547,7 @@ async def get_events(
     # Handle multiple events or single event with basic output
     event_details_list = []
     for item in items:
-        summary = item.get("summary", "No Title")
+        summary = sanitize_display_text(item.get("summary", "No Title"))
         start_time = _format_event_time(item, "start")
         end_time = _format_event_time(item, "end")
         link = item.get("htmlLink", "No Link")
@@ -893,7 +901,10 @@ async def _create_event_impl(
             )
         )
     link = created_event.get("htmlLink", "No link available")
-    confirmation_message = f"Successfully created event '{created_event.get('summary', summary)}' for {user_google_email}. Link: {link}"
+    confirmation_message = as_single_line(
+        f"Successfully created event '{created_event.get('summary', summary)}' "
+        f"for {user_google_email}. Link: {link}"
+    )
 
     # Surface the conferencing link (native Meet or third-party add-on) if present
     if add_google_meet or conference_data is not None:
@@ -1162,7 +1173,10 @@ async def _modify_event_impl(
     )
 
     link = updated_event.get("htmlLink", "No link available")
-    confirmation_message = f"Successfully modified event '{updated_event.get('summary', summary)}' (ID: {event_id}) for {user_google_email}. Link: {link}"
+    confirmation_message = as_single_line(
+        f"Successfully modified event '{updated_event.get('summary', summary)}' "
+        f"(ID: {event_id}) for {user_google_email}. Link: {link}"
+    )
 
     # Surface the conferencing link (native Meet or third-party add-on) if present
     if conference_data is not None:
@@ -1290,7 +1304,7 @@ async def _rsvp_event_impl(
         )
     )
 
-    summary = updated_event.get("summary", "Unknown event")
+    summary = sanitize_display_text(updated_event.get("summary", "Unknown event"))
     logger.info(
         f"[rsvp_event] RSVP for event {event_id} set to '{response}' for {user_google_email}."
     )
@@ -1681,7 +1695,7 @@ async def _list_ooo_events_impl(
 
     lines = [f"Found {len(items)} out-of-office event(s) for {user_google_email}:\n"]
     for i, item in enumerate(items, 1):
-        summary = item.get("summary", "Out of Office")
+        summary = sanitize_display_text(item.get("summary", "Out of Office"))
         start = item.get("start", {}).get(
             "date", item.get("start", {}).get("dateTime", "N/A")
         )
@@ -1691,7 +1705,7 @@ async def _list_ooo_events_impl(
         event_id = item.get("id", "N/A")
         ooo_props = item.get("outOfOfficeProperties", {})
         decline_mode = ooo_props.get("autoDeclineMode", "N/A")
-        decline_msg = ooo_props.get("declineMessage", "")
+        decline_msg = sanitize_display_text(ooo_props.get("declineMessage", ""))
 
         lines.append(f'{i}. "{summary}" ({start} to {end})')
         lines.append(f"   Auto-decline: {decline_mode}")
@@ -1780,7 +1794,8 @@ async def _update_ooo_event_impl(
 
     confirmation = (
         f"Successfully updated Out of Office event (ID: {event_id}) for {user_google_email}.\n"
-        f"- Summary: {updated_event.get('summary', 'Out of Office')}\n"
+        f"- Summary: "
+        f"{sanitize_display_text(updated_event.get('summary', 'Out of Office'))}\n"
         f"- Start: {start_display}\n"
         f"- End: {end_display}\n"
         f"- Link: {link}"
@@ -2134,7 +2149,7 @@ async def _list_focus_time_events_impl(
 
     lines = [f"Found {len(items)} Focus Time event(s) for {user_google_email}:\n"]
     for i, item in enumerate(items, 1):
-        summary = item.get("summary", "Focus Time")
+        summary = sanitize_display_text(item.get("summary", "Focus Time"))
         start = item.get("start", {}).get(
             "date", item.get("start", {}).get("dateTime", "N/A")
         )
@@ -2144,7 +2159,7 @@ async def _list_focus_time_events_impl(
         event_id = item.get("id", "N/A")
         ft_props = item.get("focusTimeProperties", {})
         decline_mode = ft_props.get("autoDeclineMode", "N/A")
-        decline_msg = ft_props.get("declineMessage", "")
+        decline_msg = sanitize_display_text(ft_props.get("declineMessage", ""))
         chat_st = ft_props.get("chatStatus", "")
 
         lines.append(f'{i}. "{summary}" ({start} to {end})')
@@ -2252,7 +2267,8 @@ async def _update_focus_time_event_impl(
 
     confirmation = (
         f"Successfully updated Focus Time event (ID: {event_id}) for {user_google_email}.\n"
-        f"- Summary: {updated_event.get('summary', 'Focus Time')}\n"
+        f"- Summary: "
+        f"{sanitize_display_text(updated_event.get('summary', 'Focus Time'))}\n"
         f"- Start: {start_display}\n"
         f"- End: {end_display}\n"
         f"- Link: {link}"
@@ -2590,6 +2606,6 @@ async def create_calendar(
     )
 
     calendar_id = result["id"]
-    calendar_summary = result.get("summary", summary)
+    calendar_summary = sanitize_display_text(result.get("summary", summary))
     logger.info(f"[create_calendar] Created calendar with ID: {calendar_id}")
     return f"Created calendar '{calendar_summary}' (ID: {calendar_id})"

@@ -14,7 +14,7 @@ from mcp.types import ToolAnnotations
 
 from auth.service_decorator import require_google_service
 from core.server import server
-from core.utils import handle_http_errors
+from core.utils import as_single_line, handle_http_errors, sanitize_display_text
 
 logger = logging.getLogger(__name__)
 
@@ -247,9 +247,11 @@ async def get_form(service, user_google_email: str, form_id: str) -> str:
     form = await asyncio.to_thread(service.forms().get(formId=form_id).execute)
 
     form_info = form.get("info", {})
-    title = form_info.get("title", "No Title")
-    description = form_info.get("description", "No Description")
-    document_title = form_info.get("documentTitle", title)
+    # All three are authored by whoever built the form; the description is a
+    # natively multi-line field, so it breaks the record with no crafting.
+    title = sanitize_display_text(form_info.get("title", "No Title"))
+    description = sanitize_display_text(form_info.get("description", "No Description"))
+    document_title = sanitize_display_text(form_info.get("documentTitle", title))
 
     edit_url = f"https://docs.google.com/forms/d/{form_id}/edit"
     responder_url = form.get(
@@ -267,8 +269,10 @@ async def get_form(service, user_google_email: str, form_id: str) -> str:
         item_title = serialized_item.get("title", f"Item {item_index}")
         item_type = serialized_item.get("type", "UNKNOWN")
         required_text = " (Required)" if serialized_item.get("required") else ""
+        # Form item titles are authored by whoever built the form, which is not
+        # necessarily this user -- a form can be shared for editing.
         items_summary.append(
-            f"  {item_index}. {item_title} [{item_type}]{required_text}"
+            as_single_line(f"  {item_index}. {item_title} [{item_type}]{required_text}")
         )
 
     items_summary_text = (
@@ -390,7 +394,11 @@ async def get_form_response(
         question_response = answer_data.get("textAnswers", {}).get("answers", [])
         if question_response:
             answer_text = ", ".join([ans.get("value", "") for ans in question_response])
-            answer_details.append(f"  Question ID {question_id}: {answer_text}")
+            # Free text typed by an anonymous respondent -- the most directly
+            # attacker-supplied string in this package.
+            answer_details.append(
+                as_single_line(f"  Question ID {question_id}: {answer_text}")
+            )
         else:
             answer_details.append(f"  Question ID {question_id}: No answer provided")
 

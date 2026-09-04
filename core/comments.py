@@ -14,7 +14,7 @@ from mcp.types import ToolAnnotations
 
 from auth.service_decorator import require_google_service
 from core.server import server
-from core.utils import handle_http_errors
+from core.utils import as_single_line, handle_http_errors, sanitize_display_text
 
 logger = logging.getLogger(__name__)
 
@@ -296,7 +296,20 @@ async def _read_comments_impl(
 
         output.append("")  # Empty line between comments
 
-    return "\\n".join(output)
+    # Author display names, the quoted file content and the comment/reply
+    # bodies are all chosen by whoever commented -- anyone the file is shared
+    # with. Each element of `output` is one record line, so the guard runs at
+    # the line boundary rather than on a list of fields.
+    #
+    # NOTE, unrelated to this guard and deliberately not changed here: the
+    # separator below is the two-character sequence backslash-n, not a
+    # newline, so this function returns one physical line containing literal
+    # "\n" text (same in the three _impl returns below). That looks like a
+    # pre-existing escaping bug rather than an intent, but changing it changes
+    # every comment tool's output shape, which is out of scope for a security
+    # fix. It does NOT make the forgery moot: a real line break in a comment
+    # body still starts a real new line in the returned string.
+    return "\\n".join(as_single_line(line) for line in output)
 
 
 async def _create_comment_impl(
@@ -323,7 +336,9 @@ async def _create_comment_impl(
     )
 
     comment_id = comment.get("id", "")
-    author = comment.get("author", {}).get("displayName", "Unknown")
+    author = sanitize_display_text(
+        comment.get("author", {}).get("displayName", "Unknown")
+    )
     created = comment.get("createdTime", "")
 
     return f"Comment created successfully!\\nComment ID: {comment_id}\\nAuthor: {author}\\nCreated: {created}\\nContent: {comment_content}"
@@ -351,7 +366,9 @@ async def _reply_to_comment_impl(
     )
 
     reply_id = reply.get("id", "")
-    author = reply.get("author", {}).get("displayName", "Unknown")
+    author = sanitize_display_text(
+        reply.get("author", {}).get("displayName", "Unknown")
+    )
     created = reply.get("createdTime", "")
 
     return f"Reply posted successfully!\\nReply ID: {reply_id}\\nAuthor: {author}\\nCreated: {created}\\nContent: {reply_content}"
@@ -379,7 +396,9 @@ async def _resolve_comment_impl(
     )
 
     reply_id = reply.get("id", "")
-    author = reply.get("author", {}).get("displayName", "Unknown")
+    author = sanitize_display_text(
+        reply.get("author", {}).get("displayName", "Unknown")
+    )
     created = reply.get("createdTime", "")
 
     return f"Comment {comment_id} has been resolved successfully.\\nResolve reply ID: {reply_id}\\nAuthor: {author}\\nCreated: {created}"

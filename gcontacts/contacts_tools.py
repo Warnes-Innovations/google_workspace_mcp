@@ -17,7 +17,12 @@ from mcp.types import ToolAnnotations
 
 from auth.service_decorator import require_google_service
 from core.server import server
-from core.utils import UserInputError, handle_http_errors, StringList
+from core.utils import (
+    UserInputError,
+    handle_http_errors,
+    sanitize_display_text,
+    StringList,
+)
 from gcontacts.contacts_helpers import (
     _format_contact,
     _merge_emails,
@@ -1125,7 +1130,10 @@ async def list_contact_groups(
     for group in groups:
         resource_name = group.get("resourceName", "")
         group_id = resource_name.replace("contactGroups/", "")
-        name = group.get("name", "Unnamed")
+        # Free text. A Workspace admin or a synced third-party account can
+        # create groups in this account, and a line break in one forges the
+        # ID/Type/Members rows below plus a fake "Next page token:" line.
+        name = sanitize_display_text(group.get("name", "Unnamed"))
         group_type = group.get("groupType", "USER_CONTACT_GROUP")
         member_count = group.get("memberCount", 0)
 
@@ -1193,7 +1201,8 @@ async def get_contact_group(
         .execute
     )
 
-    name = result.get("name", "Unnamed")
+    # Free text; forges the ID/Type/Total Members rows below.
+    name = sanitize_display_text(result.get("name", "Unnamed"))
     group_type = result.get("groupType", "USER_CONTACT_GROUP")
     member_count = result.get("memberCount", 0)
     member_resource_names = result.get("memberResourceNames", [])
@@ -1583,7 +1592,8 @@ async def manage_contact_group(
 
         resource_name = result.get("resourceName", "")
         created_group_id = resource_name.replace("contactGroups/", "")
-        created_name = result.get("name", name)
+        # Read back from the server rather than trusted from this call's arg.
+        created_name = sanitize_display_text(result.get("name", name))
 
         response = f"Contact Group Created for {user_google_email}:\n\n"
         response += f"Name: {created_name}\n"
@@ -1615,7 +1625,8 @@ async def manage_contact_group(
             .execute
         )
 
-        updated_name = result.get("name", name)
+        # Read back from the server rather than trusted from this call's arg.
+        updated_name = sanitize_display_text(result.get("name", name))
 
         response = f"Contact Group Updated for {user_google_email}:\n\n"
         response += f"Name: {updated_name}\n"

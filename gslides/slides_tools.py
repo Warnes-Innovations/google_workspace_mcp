@@ -12,7 +12,7 @@ from mcp.types import ToolAnnotations
 
 from auth.service_decorator import require_google_service
 from core.server import server
-from core.utils import handle_http_errors
+from core.utils import as_single_line, handle_http_errors, sanitize_display_text
 from core.comments import create_comment_tools
 from gslides.slides_helpers import (
     validate_batch_update_requests,
@@ -84,8 +84,11 @@ def _describe_elements(
             shape_type = element["shape"].get("shapeType", "Unknown")
             full_text = _extract_shape_text(element["shape"])
             if full_text:
+                # splitlines(), not split("\n"): the latter breaks on \n only,
+                # so \r, \v, \f, \x1c-\x1e, U+0085, U+2028 and U+2029 survived
+                # into a row instead of becoming their own "> " continuation.
                 lines = [
-                    line.rstrip() for line in full_text.split("\n") if line.strip()
+                    line.rstrip() for line in full_text.splitlines() if line.strip()
                 ]
                 if len(lines) == 1:
                     info.append(
@@ -144,7 +147,11 @@ def _describe_elements(
             info.extend(_describe_elements(children, indent + "  "))
         else:
             info.append(f"{indent}Element: ID {element_id}, Type: Unknown")
-    return info
+    # Shape text, WordArt renderedText and an image's sourceUrl are all authored
+    # by whoever edited the deck. Every element of `info` is one line, so the
+    # guard runs at the line boundary and covers the element kinds added later
+    # as well as the ones enumerated above.
+    return [as_single_line(line) for line in info]
 
 
 def _speaker_notes_shape(slide: Dict[str, Any]) -> Tuple[Optional[str], str]:
@@ -172,11 +179,14 @@ def _describe_speaker_notes(slide: Dict[str, Any], indent: str = "    ") -> List
     notes_object_id, notes_text = _speaker_notes_shape(slide)
     if not notes_object_id:
         return [f"{indent}Speaker Notes: none (slide has no notes placeholder)"]
-    lines = [line.rstrip() for line in notes_text.split("\n") if line.strip()]
+    # splitlines() rather than split("\n") -- see _describe_elements.
+    lines = [line.rstrip() for line in notes_text.splitlines() if line.strip()]
     header = f"{indent}Speaker Notes Shape ID: {notes_object_id}"
     if not lines:
         return [f"{header}, Notes: empty"]
-    return [f"{header}, Notes:"] + [f"{indent}  > {line}" for line in lines]
+    return [f"{header}, Notes:"] + [
+        as_single_line(f"{indent}  > {line}") for line in lines
+    ]
 
 
 @server.tool(
@@ -265,7 +275,8 @@ async def get_presentation(
         service.presentations().get(presentationId=presentation_id).execute
     )
 
-    title = result.get("title", "Untitled")
+    # Read back from the API: a deck shared with the user is titled by its owner.
+    title = sanitize_display_text(result.get("title", "Untitled"))
     slides = result.get("slides", [])
     page_size = result.get("pageSize", {})
 
@@ -284,10 +295,13 @@ async def get_presentation(
 
             # cleanup text we collected
             slide_text = "\n".join(texts_from_elements)
-            slide_text_rows = slide_text.split("\n")
+            # splitlines() rather than split("\n") -- see _describe_elements.
+            slide_text_rows = slide_text.splitlines()
             slide_text_rows = [row for row in slide_text_rows if len(row.strip()) > 0]
             if slide_text_rows:
-                slide_text_rows = ["    > " + row for row in slide_text_rows]
+                slide_text_rows = [
+                    as_single_line("    > " + row) for row in slide_text_rows
+                ]
                 slide_text = "\n" + "\n".join(slide_text_rows)
             else:
                 slide_text = ""

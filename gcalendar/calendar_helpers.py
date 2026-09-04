@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from core.utils import as_single_line, sanitize_display_text
+
 logger = logging.getLogger(__name__)
 
 _WEEKDAYS = (
@@ -94,7 +96,12 @@ class EventBoundary:
         evidence.append(f"ISO weekday: {self.iso_weekday}")
         if self.is_exclusive_end:
             evidence.append("exclusive all-day end")
-        return f"{self.isoformat()} [{'; '.join(evidence)}]"
+        # Both halves can carry unvalidated remote text: `isoformat()` falls
+        # back to `raw` verbatim when no zone resolved, and `timezone` is
+        # stored even when ZoneInfo rejected it (_resolve_zone only logs). Two
+        # values that look like a timestamp and an IANA name, and are neither
+        # on exactly the paths where parsing already failed.
+        return as_single_line(f"{self.isoformat()} [{'; '.join(evidence)}]")
 
 
 def _resolve_zone(boundary: Dict[str, Any]) -> Optional[ZoneInfo]:
@@ -182,7 +189,13 @@ def _format_event_time(item: Dict[str, Any], field: str) -> str:
         boundary = item.get(boundary_field)
         if isinstance(boundary, dict):
             value = boundary.get("dateTime", boundary.get("date"))
-            return value if isinstance(value, str) else "Unavailable"
+            # Reached only when the RFC3339/date regex REJECTED this value, so
+            # it is the one unvalidated string on the timestamp path.
+            return (
+                sanitize_display_text(value)
+                if isinstance(value, str)
+                else "Unavailable"
+            )
         return "Unavailable"
     return parsed.render()
 
@@ -195,10 +208,13 @@ def _get_meeting_link(item: Dict[str, Any]) -> str:
             if entry_point.get("entryPointType") == "video":
                 uri = entry_point.get("uri", "")
                 if uri:
-                    return uri
+                    # conferenceData is settable by the event's author and by
+                    # third-party conferencing add-ons; this "URL" is never
+                    # validated, so it is remote text, not a Google-built link.
+                    return sanitize_display_text(uri)
     hangout_link = item.get("hangoutLink", "")
     if hangout_link:
-        return hangout_link
+        return sanitize_display_text(hangout_link)
     return ""
 
 
@@ -236,7 +252,11 @@ def _format_attendee_details(
         if optional:
             detail_parts.append("(optional)")
 
-        attendee_details_list.append(" ".join(detail_parts))
+        # One attendee is one line. The email is chosen by the organizer, so a
+        # line break in it forges further attendee rows -- and, because this
+        # block is embedded in the event listing, event rows too. The join
+        # below supplies the only line breaks this value is allowed to have.
+        attendee_details_list.append(as_single_line(" ".join(detail_parts)))
 
     return f"\n{indent}".join(attendee_details_list)
 
@@ -265,11 +285,17 @@ def _format_attachment_details(
         file_id = att.get("fileId", "No ID")
         mime_type = att.get("mimeType", "Unknown")
 
-        attachment_info = (
-            f"{title}\n"
-            f"{indent}File URL: {file_url}\n"
-            f"{indent}File ID: {file_id}\n"
-            f"{indent}MIME Type: {mime_type}"
+        # title, fileUrl and mimeType are all set by whoever attached the file
+        # (mimeType is not a Google-derived enum here). Each of the four lines
+        # is flattened individually, so the block keeps its intended shape
+        # while no field can add a fifth line.
+        attachment_info = "\n".join(
+            [
+                as_single_line(f"{title}"),
+                as_single_line(f"{indent}File URL: {file_url}"),
+                as_single_line(f"{indent}File ID: {file_id}"),
+                as_single_line(f"{indent}MIME Type: {mime_type}"),
+            ]
         )
         attachment_details_list.append(attachment_info)
 
@@ -280,8 +306,12 @@ def _format_person(person: Optional[Dict[str, Any]]) -> Optional[str]:
     """Format a Google Calendar person dict (creator or organizer) for display."""
     if not person:
         return None
-    name = (person.get("displayName") or "").strip()
-    email = (person.get("email") or "").strip()
+    # The organizer's/creator's display name AND the identifier beside it are
+    # both chosen by a remote party. This pair is the exact miss that a
+    # field-name grep produced in the gdrive review, in both halves: the name
+    # because it reads as cosmetic, the email because it reads as an ID.
+    name = sanitize_display_text(person.get("displayName") or "").strip()
+    email = sanitize_display_text(person.get("email") or "").strip()
     if name and email:
         return f"{name} <{email}>"
     if name:
@@ -313,55 +343,64 @@ def _format_event_detail_lines(
     Returns:
         Newline-terminated block of detail lines
     """
-    lines = [
-        f"{prefix}Description: {item.get('description', 'No Description')}",
-        f"{prefix}Location: {item.get('location', 'No Location')}",
-        f"{prefix}Color ID: {item.get('colorId', 'None')}",
-    ]
+    # `add` flattens; `lines.append` is used directly only for the two values
+    # that are legitimately multi-line (attendee and attachment blocks), whose
+    # constituent lines are each flattened by their own formatter above.
+    # Description and Location are natively multi-line event fields, so this
+    # forges rows with no crafting at all -- an ordinary two-paragraph event
+    # description already breaks the record.
+    lines: List[str] = []
+
+    def add(line: str) -> None:
+        lines.append(as_single_line(line))
+
+    add(f"{prefix}Description: {item.get('description', 'No Description')}")
+    add(f"{prefix}Location: {item.get('location', 'No Location')}")
+    add(f"{prefix}Color ID: {item.get('colorId', 'None')}")
 
     recurring_event_id = item.get("recurringEventId")
     if recurring_event_id:
-        lines.append(f"{prefix}Recurring Event ID: {recurring_event_id}")
+        add(f"{prefix}Recurring Event ID: {recurring_event_id}")
 
     original_start_time = item.get("originalStartTime")
     is_exception = item.get("status") != "confirmed" or not item.get("start")
     if original_start_time and is_exception:
-        lines.append(f"{prefix}Original Start Time: {json.dumps(original_start_time)}")
+        add(f"{prefix}Original Start Time: {json.dumps(original_start_time)}")
 
     recurrence = item.get("recurrence")
     if recurrence:
         # Keep the individual RFC5545 lines lossless and machine-readable. A
         # recurring master may carry RRULE plus RDATE/EXDATE entries whose
         # commas and semicolons make a hand-joined string ambiguous.
-        lines.append(f"{prefix}Recurrence: {json.dumps(recurrence)}")
+        add(f"{prefix}Recurrence: {json.dumps(recurrence)}")
 
     # eventType and status are omitted at their API defaults, so an ordinary
     # one-off meeting stays as compact as it was before these fields existed.
     event_type = item.get("eventType")
     if event_type and event_type != "default":
-        lines.append(f"{prefix}Event Type: {event_type}")
+        add(f"{prefix}Event Type: {event_type}")
 
     status = item.get("status")
     if status and status != "confirmed":
-        lines.append(f"{prefix}Status: {status}")
+        add(f"{prefix}Status: {status}")
 
     creator_str = _format_person(item.get("creator"))
     if creator_str:
-        lines.append(f"{prefix}Creator: {creator_str}")
+        add(f"{prefix}Creator: {creator_str}")
 
     organizer_str = _format_person(item.get("organizer"))
     if organizer_str:
-        lines.append(f"{prefix}Organizer: {organizer_str}")
+        add(f"{prefix}Organizer: {organizer_str}")
 
     meeting_link = _get_meeting_link(item)
     if meeting_link:
-        lines.append(f"{prefix}Meeting Link: {meeting_link}")
+        add(f"{prefix}Meeting Link: {meeting_link}")
 
     attendees = item.get("attendees", [])
     attendee_emails = (
         ", ".join([a.get("email", "") for a in attendees]) if attendees else "None"
     )
-    lines.append(f"{prefix}Attendees: {attendee_emails}")
+    add(f"{prefix}Attendees: {attendee_emails}")
     lines.append(
         f"{prefix}Attendee Details: {_format_attendee_details(attendees, indent=indent)}"
     )

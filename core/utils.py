@@ -70,6 +70,89 @@ _SUPPORTED_TEXT_CHOICE_NAMESPACES = {
 }
 
 
+# --------------------------------------------------------------------------
+# Result-row forgery guard
+#
+# Tool results in this server are newline-joined lists of records::
+#
+#     - Name: "quarterly report" (ID: abc, Type: ...)
+#     nextPageToken: ...
+#
+# Any field whose value is chosen by a remote party -- a sender's display name,
+# a Subject, a label or filename, a Chat space or author name, a Calendar
+# attendee, a shared contact -- is rendered verbatim into that structure. A
+# value containing a line break forges additional rows and a fake
+# ``nextPageToken:`` line, smuggling attacker-authored text into agent context
+# as though the tool had reported it. Demonstrated against these formatters,
+# not theorised.
+#
+# NOTE (dedupe me): ``gdrive/drive_helpers.py`` carries a private twin of these
+# two functions (``_sanitize_drive_text`` / ``_as_single_line``), written
+# concurrently on another branch. They are intentionally identical in
+# behaviour. Once both branches land, gdrive should import from here and its
+# twin should be deleted -- so a later reader dedupes deliberately rather than
+# discovering the duplication by accident, and so the copies cannot drift.
+# --------------------------------------------------------------------------
+
+# Every character str.splitlines() treats as a line break. Enumerated rather
+# than derived from `ch < " "`, because NEL, LINE SEPARATOR and PARAGRAPH
+# SEPARATOR are all ABOVE U+0020 and silently defeated an earlier version of
+# this guard -- it claimed "one record stays one line" while three characters
+# broke the line anyway.
+#
+# Written with \u escapes rather than literal characters on purpose: U+2028 and
+# U+2029 are invisible in most editors and at least one editing tool silently
+# rewrote them to plain spaces while this module was being authored, which
+# would have shipped a guard whose docstring outran its behaviour.
+_LINE_BREAK_CHARS = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
+
+
+def sanitize_display_text(value: Any) -> str:
+    """Flatten remote-supplied text so it cannot forge result-list structure.
+
+    Every line-break and control character becomes a space, so one record
+    cannot become two.
+
+    What this does NOT do, deliberately, so callers don't over-trust it:
+      * It is not an escape. There is no grammar for this output format and
+        nothing parses it, so escaping quotes would buy a visual cue and
+        nothing more -- while mangling every legitimate name containing a quote
+        or a backslash. Omitted for that reason.
+      * It does not make the text safe. Prompt injection is prose: "ignore
+        previous instructions" needs no special character and passes straight
+        through. Treat all of this content as untrusted input to the model.
+
+    Its one guarantee is structural: the result cannot contain a line break.
+    """
+    text = "" if value is None else str(value)
+    return "".join(
+        " " if (ch < " " or ch == "\x7f" or ch in _LINE_BREAK_CHARS) else ch
+        for ch in text
+    )
+
+
+def as_single_line(line: str) -> str:
+    """Enforce one-record-one-line on an ASSEMBLED result line.
+
+    This is the load-bearing guard, and :func:`sanitize_display_text` on
+    individual fields is defense in depth on top of it -- not the other way
+    round. A per-field guard is only as good as its field list, and the field
+    list was wrong four times in a single package during the gdrive review: an
+    intermediate variable rendered eight lines below its assignment, a
+    "Shared by" line, a container's ``name`` (which did not match a
+    person-shaped grep), and ``mimeType``/``id``/``size``, which were missed by
+    category because they look system-generated. Applying the guard at the line
+    boundary makes the invariant hold for every field, including the ones
+    nobody thought to list and the ones added later.
+
+    Where a record is a multi-line block (a message header stanza, a message
+    with a body), this cannot be applied to the whole block -- apply it per
+    constituent record line, and flatten individually interpolated fields with
+    :func:`sanitize_display_text`.
+    """
+    return sanitize_display_text(line)
+
+
 class TransientNetworkError(Exception):
     """Custom exception for transient network errors after retries."""
 

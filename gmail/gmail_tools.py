@@ -43,7 +43,9 @@ from core.config import (
 from core.http_utils import ssrf_safe_stream
 from core.utils import (
     GOOGLE_API_WRITE_RETRIES,
+    as_single_line,
     handle_http_errors,
+    sanitize_display_text,
     validate_file_path,
     UserInputError,
     StringList,
@@ -366,7 +368,13 @@ def _format_message_header_lines(
     if list_id:
         content_lines.append(f"List-Id: {list_id}")
 
-    return content_lines
+    # Every value above comes out of the message's own headers, so the SENDER
+    # chose it. A line break in any of them forges extra header rows -- and,
+    # since this stanza is embedded in search and batch output, a fake
+    # `nextPageToken:` row too. Flattening the assembled lines rather than the
+    # individual header variables keeps the guarantee true for headers added to
+    # this function later.
+    return [as_single_line(line) for line in content_lines]
 
 
 async def _export_full_message(
@@ -508,7 +516,9 @@ async def _export_full_message(
         logger.error(f"[get_gmail_message_content] Failed to save message: {exc}")
         return f"Error: failed to save message to storage: {exc}"
 
-    result_lines.append(f"Saved filename: {Path(saved.path).name}")
+    # The saved name is derived from the sender-chosen Subject, so it inherits
+    # whatever that contained.
+    result_lines.append(as_single_line(f"Saved filename: {Path(saved.path).name}"))
     for note in notes:
         result_lines.append(f"Note: {note}")
 
@@ -808,8 +818,17 @@ def _extract_attachments(payload: dict) -> List[Dict[str, Any]]:
         if part.get("filename") and part.get("body", {}).get("attachmentId"):
             attachments.append(
                 {
-                    "filename": part["filename"],
-                    "mimeType": part.get("mimeType", "application/octet-stream"),
+                    # filename and mimeType are both chosen by the SENDER --
+                    # mimeType is client-supplied, not derived by Gmail -- and
+                    # both are rendered into "--- ATTACHMENTS ---" rows by
+                    # three separate call sites. Flattening once here fixes the
+                    # class rather than the three instances, and also keeps a
+                    # line break out of the filename handed to attachment
+                    # storage.
+                    "filename": sanitize_display_text(part["filename"]),
+                    "mimeType": sanitize_display_text(
+                        part.get("mimeType", "application/octet-stream")
+                    ),
                     "size": part.get("body", {}).get("size", 0),
                     "attachmentId": part["body"]["attachmentId"],
                 }
@@ -1605,7 +1624,11 @@ def _format_gmail_results_plain(
             f"📄 PAGINATION: To get the next page, call search_gmail_messages again with page_token='{next_page_token}'"
         )
 
-    return "\n".join(lines)
+    # Every element of `lines` is a single result row by construction, so the
+    # guard runs at the line boundary rather than on a hand-picked list of
+    # fields: Subject/From/Date are sender-chosen, and a line break in any of
+    # them forges extra "Message ID:" rows and a fake pagination line.
+    return "\n".join(as_single_line(line) for line in lines)
 
 
 @server.tool(
@@ -3128,7 +3151,9 @@ def _format_thread_content(
     # Extract thread subject from the first message
     first_message = messages[0]
     first_headers = _extract_headers(first_message.get("payload", {}), ["Subject"])
-    thread_subject = first_headers.get("Subject", "(no subject)")
+    # Sender-chosen. Flattened here rather than at each render site because it
+    # is also compared against each message's own Subject below.
+    thread_subject = sanitize_display_text(first_headers.get("Subject", "(no subject)"))
 
     # Build the thread content
     content_lines = [
@@ -3144,15 +3169,20 @@ def _format_thread_content(
         # Extract headers
         headers = _extract_headers(payload, GMAIL_METADATA_HEADERS)
 
-        sender = headers.get("From", "(unknown sender)")
-        date = headers.get("Date", "(unknown date)")
-        subject = headers.get("Subject", "(no subject)")
-        reply_to = headers.get("Reply-To", "")
-        to = headers.get("To", "")
-        cc = headers.get("Cc", "")
-        rfc822_message_id = headers.get("Message-ID", "")
-        in_reply_to = headers.get("In-Reply-To", "")
-        references = headers.get("References", "")
+        # Every one of these is a message header, so the SENDER chose it. A
+        # line break in any of them forges extra "=== Message N ===" rows.
+        # Flattened at extraction, so each render site below is safe by
+        # construction and the body -- deliberately NOT flattened -- keeps its
+        # real line structure.
+        sender = sanitize_display_text(headers.get("From", "(unknown sender)"))
+        date = sanitize_display_text(headers.get("Date", "(unknown date)"))
+        subject = sanitize_display_text(headers.get("Subject", "(no subject)"))
+        reply_to = sanitize_display_text(headers.get("Reply-To", ""))
+        to = sanitize_display_text(headers.get("To", ""))
+        cc = sanitize_display_text(headers.get("Cc", ""))
+        rfc822_message_id = sanitize_display_text(headers.get("Message-ID", ""))
+        in_reply_to = sanitize_display_text(headers.get("In-Reply-To", ""))
+        references = sanitize_display_text(headers.get("References", ""))
 
         if body_format == "raw":
             body_data = (raw_contents or {}).get(
@@ -3563,16 +3593,20 @@ async def list_gmail_labels(
         else:
             user_labels.append(label)
 
+    # A label name is free text. It is usually the account owner's own, but a
+    # Workspace admin or an authorised third-party app can create labels in
+    # this mailbox, so it is not self-authored by construction -- and a line
+    # break in one forges extra "• name (ID: ...)" rows.
     if system_labels:
         lines.append("📂 SYSTEM LABELS:")
         for label in system_labels:
-            lines.append(f"  • {label['name']} (ID: {label['id']})")
+            lines.append(as_single_line(f"  • {label['name']} (ID: {label['id']})"))
         lines.append("")
 
     if user_labels:
         lines.append("🏷️  USER LABELS:")
         for label in user_labels:
-            lines.append(f"  • {label['name']} (ID: {label['id']})")
+            lines.append(as_single_line(f"  • {label['name']} (ID: {label['id']})"))
 
     return "\n".join(lines)
 
@@ -3730,7 +3764,10 @@ async def list_gmail_filters(service, user_google_email: str) -> str:
         if not criteria_lines:
             criteria_lines.append("(none)")
 
-        lines.extend([f"    • {line}" for line in criteria_lines])
+        # Filter criteria are usually the account owner's own, but a Workspace
+        # admin or an authorised app can install filters in this mailbox, so
+        # they are not self-authored by construction. Each bullet is one row.
+        lines.extend([as_single_line(f"    • {line}") for line in criteria_lines])
 
         lines.append("  Actions:")
         action_lines = []
@@ -3744,7 +3781,7 @@ async def list_gmail_filters(service, user_google_email: str) -> str:
         if not action_lines:
             action_lines.append("(none)")
 
-        lines.extend([f"    • {line}" for line in action_lines])
+        lines.extend([as_single_line(f"    • {line}") for line in action_lines])
         lines.append("")
 
     return "\n".join(lines).rstrip()
