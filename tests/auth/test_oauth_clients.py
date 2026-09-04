@@ -5,7 +5,11 @@ import logging
 
 import pytest
 
-from auth.google_auth import load_client_secrets_from_env, resolve_oauth_client
+from auth.google_auth import (
+    check_client_secrets,
+    load_client_secrets_from_env,
+    resolve_oauth_client,
+)
 from auth.oauth21_session_store import OAuth21SessionStore, SessionContext
 from auth.oauth_types import OAuthVersionDetectionParams
 from auth.oauth_clients import (
@@ -566,3 +570,71 @@ def test_no_multi_client_warning_for_a_single_client_under_oauth21(
         OAuthConfig()
 
     assert _multi_client_warnings(caplog) == []
+
+
+# --------------------------------------------------------------------------
+# check_client_secrets: "is ANY client configured", not "is there a default"
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def no_secrets_file(monkeypatch, tmp_path):
+    """Point CONFIG_CLIENT_SECRETS_PATH at a path that does not exist."""
+    absent = tmp_path / "client_secret.json"
+    monkeypatch.setattr("auth.google_auth.CONFIG_CLIENT_SECRETS_PATH", str(absent))
+    return absent
+
+
+def test_check_client_secrets_accepts_a_registry_without_a_default(
+    monkeypatch, no_secrets_file
+):
+    # This gates start_google_auth (core/server.py) and both callback
+    # handlers. Asking only for the DEFAULT client made it answer "credentials
+    # not found" for every user of a no-default registry -- including accounts
+    # the registry maps perfectly well. The right question at this call site is
+    # plural: is ANY OAuth client configured. Which client serves a given
+    # account is resolve_oauth_client()'s decision, made later.
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENTS", json.dumps(NO_DEFAULT_DOC))
+
+    assert check_client_secrets() is None
+
+
+def test_check_client_secrets_accepts_a_registry_with_a_default(
+    monkeypatch, no_secrets_file
+):
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENTS", json.dumps(THREE_CLIENT_DOC))
+
+    assert check_client_secrets() is None
+
+
+def test_check_client_secrets_still_reports_a_wholly_unconfigured_server(
+    no_secrets_file,
+):
+    message = check_client_secrets()
+
+    assert message is not None
+    assert str(no_secrets_file) in message
+
+
+def test_check_client_secrets_remediation_names_every_working_source(no_secrets_file):
+    # The old text advised setting GOOGLE_OAUTH_CLIENT_ID/SECRET. Whenever a
+    # registry variable is set that advice is a guaranteed no-op, because
+    # load_registry_from_env returns at the first source that hits and the
+    # registry sources are checked first. The message must name the sources
+    # that can actually take effect.
+    message = check_client_secrets()
+
+    assert message is not None
+    assert "GOOGLE_OAUTH_CLIENTS_FILE" in message
+    assert "GOOGLE_OAUTH_CLIENTS" in message
+    assert "GOOGLE_OAUTH_CLIENT_ID" in message
+
+
+def test_check_client_secrets_accepts_a_bare_secrets_file(monkeypatch, tmp_path):
+    # No registry at all: the file fallback is the intended single-client path
+    # and must keep working untouched.
+    secrets = tmp_path / "client_secret.json"
+    secrets.write_text(json.dumps({"installed": {"client_id": "on-disk-id"}}))
+    monkeypatch.setattr("auth.google_auth.CONFIG_CLIENT_SECRETS_PATH", str(secrets))
+
+    assert check_client_secrets() is None

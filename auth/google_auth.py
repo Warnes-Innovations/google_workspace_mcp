@@ -279,6 +279,14 @@ def load_client_secrets(client_secrets_path: str) -> Dict[str, Any]:
     """
     Loads the client secrets from environment variables (preferred) or from the client secrets file.
 
+    NOT ACCOUNT-AWARE, and currently unused by this package. It reads only the
+    registry's DEFAULT client and silently falls back to the file when there is
+    none, which for a multi-client registry without a default means authorizing
+    an account against whatever client_secret.json happens to be on disk. Use
+    ``create_oauth_flow`` (or ``resolve_oauth_client`` plus
+    ``load_client_secrets_from_env(client)``) for anything that authorizes a
+    specific account; those refuse instead of guessing.
+
     Priority order:
     1. Environment variables (GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET)
     2. File-based credentials at the specified path
@@ -332,19 +340,52 @@ def load_client_secrets(client_secrets_path: str) -> Dict[str, Any]:
 
 def check_client_secrets() -> Optional[str]:
     """
-    Checks for the presence of OAuth client secrets, either as environment
-    variables or as a file.
+    Check that at least one OAuth client is available anywhere.
+
+    This gates ``start_google_auth`` and both OAuth callback handlers, and the
+    question it asks is deliberately PLURAL: is any OAuth client configured at
+    all. It must not ask for the *default* client. A multi-client registry may
+    legitimately have no default — an unmapped account is then refused rather
+    than silently authorized against an arbitrary Cloud project — and asking
+    ``load_client_secrets_from_env()`` with no account reads only that default,
+    so the whole deployment reported "credentials not found", including for
+    accounts the registry maps perfectly well.
+
+    Which client serves a given account is a separate, later decision made by
+    ``resolve_oauth_client``, which refuses rather than guessing.
 
     Returns:
-        An error message string if secrets are not found, otherwise None.
+        An error message string if no OAuth client is configured, otherwise None.
     """
-    env_config = load_client_secrets_from_env()
-    if not env_config and not os.path.exists(CONFIG_CLIENT_SECRETS_PATH):
-        logger.error(
-            f"OAuth client credentials not found. No environment variables set and no file at {CONFIG_CLIENT_SECRETS_PATH}"
-        )
-        return f"OAuth client credentials not found. Please set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET environment variables or provide a client secrets file at {CONFIG_CLIENT_SECRETS_PATH}."
-    return None
+    # load_registry_from_env raises OAuthClientRegistryError for a configured
+    # but malformed registry. That stays fatal: a broken registry is not the
+    # same as an absent one, and treating it as absent would send the operator
+    # after credentials that are already there.
+    if load_registry_from_env() is not None:
+        return None
+
+    if os.path.exists(CONFIG_CLIENT_SECRETS_PATH):
+        return None
+
+    logger.error(
+        "No OAuth client is configured. No registry and no single-client "
+        "environment variables are set, and there is no file at %s",
+        CONFIG_CLIENT_SECRETS_PATH,
+    )
+    # Every source named here can actually take effect, because this branch is
+    # only reachable when none of them is set. Naming only
+    # GOOGLE_OAUTH_CLIENT_ID would have been advice that provably cannot work
+    # whenever a registry variable is present: load_registry_from_env returns
+    # at the first source that hits, and the registry sources are checked
+    # first, so the legacy variables would be ignored.
+    return (
+        "No OAuth client is configured. Set GOOGLE_OAUTH_CLIENTS_FILE (a path "
+        "to a JSON client registry) or GOOGLE_OAUTH_CLIENTS (that same "
+        "document inline) to register one or more OAuth clients; or, for a "
+        "single-client deployment, set GOOGLE_OAUTH_CLIENT_ID and "
+        "GOOGLE_OAUTH_CLIENT_SECRET; or provide a client secrets file at "
+        f"{CONFIG_CLIENT_SECRETS_PATH}."
+    )
 
 
 def resolve_oauth_client(
