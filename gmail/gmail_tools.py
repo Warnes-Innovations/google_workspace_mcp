@@ -3263,8 +3263,7 @@ def _format_thread_content(
                 content_lines.extend(
                     as_single_line(line)
                     for line in (
-                        f"{j}. {att['filename']} "
-                        f"({att['mimeType']}, {size_kb:.1f} KB)",
+                        f"{j}. {att['filename']} ({att['mimeType']}, {size_kb:.1f} KB)",
                         f"   Attachment ID: {att['attachmentId']}",
                         f"   Use get_gmail_attachment_content("
                         f"message_id='{message_id}', "
