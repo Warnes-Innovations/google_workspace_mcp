@@ -8,10 +8,20 @@ permissions:
   pull-requests: read
   issues: write
 
+# Which PRs are "external"?
+#
+# Only `head.repo.full_name != github.repository`. Do NOT also test
+# `head.repo.fork`: that flag describes whether the HEAD REPO is itself a fork
+# of something else, which is true for every PR in this repository -- this repo
+# is a fork of taylorwilsdon/google_workspace_mcp. Testing it made the external
+# job run on same-repo PRs and the internal job skip, so the check failed on
+# every PR opened here and could never pass (`maintainer_can_modify` is always
+# false for a same-repo PR, because the concept only applies across repos).
+
 jobs:
   check-maintainer-edits:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.head.repo.fork == true || github.event.pull_request.head.repo.full_name != github.repository
+    if: github.event.pull_request.head.repo.full_name != github.repository
 
     steps:
       - name: Check if maintainer edits are enabled
@@ -24,7 +34,20 @@ jobs:
               pull_number: context.issue.number
             });
 
-            if (!pr.maintainer_can_modify) {
+            if (pr.maintainer_can_modify) {
+              console.log('✅ Maintainer edits are enabled');
+              return;
+            }
+
+            // Post the guidance comment on a best-effort basis. If the Actions
+            // token cannot write issues (repo/org default-permissions set to
+            // read-only returns 403 even though this workflow requests
+            // `issues: write`), the comment fails -- but the check must still
+            // fail for the REAL reason. Without this guard the exception
+            // propagates before core.setFailed runs, and the job reports an
+            // opaque "Resource not accessible by integration" instead of
+            // telling the contributor what to do.
+            try {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -37,15 +60,21 @@ jobs:
                       '3. Check the checkbox to enable it\n\n' +
                       'Once you\'ve enabled this setting, this check will automatically pass. Thank you! 🙏'
               });
-
-              core.setFailed('Maintainer edits must be enabled for this pull request');
-            } else {
-              console.log('✅ Maintainer edits are enabled');
+            } catch (error) {
+              console.log(
+                `Could not post the guidance comment (${error.status || 'unknown'}: ${error.message}). ` +
+                'Failing with the reason below instead.'
+              );
             }
+
+            core.setFailed(
+              'Maintainer edits must be enabled for this pull request. ' +
+              'Enable "Allow edits from maintainers" in the pull request sidebar.'
+            );
 
   check-maintainer-edits-internal:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.head.repo.fork == false && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event.pull_request.head.repo.full_name == github.repository
 
     steps:
       - name: Skip check for internal PRs
