@@ -13,9 +13,28 @@ from mcp.types import ToolAnnotations
 
 from auth.service_decorator import require_google_service
 from core.server import server
-from core.utils import ObjectList, UserInputError, handle_http_errors
+from core.utils import (
+    ObjectList,
+    UserInputError,
+    as_single_line,
+    handle_http_errors,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _join_result_lines(output: list) -> str:
+    """Join result rows, flattening each so no field can forge a row.
+
+    Applied at the line boundary rather than to a hand-picked list of fields:
+    the rows here carry project titles, a creator's email, file names,
+    deployment/version descriptions, process function names, and a script's own
+    return value -- and the field list would have to be revisited every time a
+    row gains a column. Callers that return an opaque block (a file's full
+    source) deliberately do NOT use this.
+    """
+    return "\n".join(as_single_line(line) for line in output)
+
 
 _VALID_SCRIPT_FILE_TYPES = frozenset({"SERVER_JS", "HTML", "JSON"})
 
@@ -142,12 +161,13 @@ async def _list_script_projects_impl(
         )
 
     if "nextPageToken" in response:
-        output.append(f"\nNext page token: {response['nextPageToken']}")
+        output.append("")
+        output.append(f"Next page token: {response['nextPageToken']}")
 
     logger.info(
         f"[list_script_projects] Found {len(files)} projects for {user_google_email}"
     )
-    return "\n".join(output)
+    return _join_result_lines(output)
 
 
 @server.tool(
@@ -227,7 +247,7 @@ async def _get_script_project_impl(
             output.append("")
 
     logger.info(f"[get_script_project] Retrieved project {script_id}")
-    return "\n".join(output)
+    return _join_result_lines(output)
 
 
 @server.tool(
@@ -293,6 +313,9 @@ async def _get_script_content_impl(
     output = [f"File: {file_name} ({file_type})", "", source]
 
     logger.info(f"[get_script_content] Retrieved file {file_name} from {script_id}")
+    # NOT _join_result_lines: `source` is the file's full text and this
+    # tool exists to return it. Flattening it would destroy the payload.
+    # The header row above carries only the caller's own file_name.
     return "\n".join(output)
 
 
@@ -360,7 +383,7 @@ async def _create_script_project_impl(
     ]
 
     logger.info(f"[create_script_project] Created project {script_id}")
-    return "\n".join(output)
+    return _join_result_lines(output)
 
 
 @server.tool(
@@ -444,7 +467,7 @@ async def _update_script_content_impl(
     logger.info(
         f"[update_script_content] Pushed {len(files_to_push)} files to {script_id}"
     )
-    return "\n".join(output)
+    return _join_result_lines(output)
 
 
 @server.tool(
@@ -515,8 +538,12 @@ async def _run_script_function_impl(
         if "error" in response:
             error_details = response["error"]
             error_message = error_details.get("message", "Unknown error")
-            return (
-                f"Execution failed\nFunction: {function_name}\nError: {error_message}"
+            return _join_result_lines(
+                [
+                    "Execution failed",
+                    f"Function: {function_name}",
+                    f"Error: {error_message}",
+                ]
             )
 
         result = response.get("response", {}).get("result")
@@ -527,11 +554,17 @@ async def _run_script_function_impl(
         ]
 
         logger.info(f"[run_script_function] Successfully executed {function_name}")
-        return "\n".join(output)
+        return _join_result_lines(output)
 
     except Exception as e:
         logger.error(f"[run_script_function] Execution error: {str(e)}")
-        return f"Execution failed\nFunction: {function_name}\nError: {str(e)}"
+        return _join_result_lines(
+            [
+                "Execution failed",
+                f"Function: {function_name}",
+                f"Error: {str(e)}",
+            ]
+        )
 
 
 @server.tool(
@@ -621,7 +654,7 @@ async def _create_deployment_impl(
     ]
 
     logger.info(f"[create_deployment] Created deployment {deployment_id}")
-    return "\n".join(output)
+    return _join_result_lines(output)
 
 
 @server.tool(
@@ -741,7 +774,7 @@ async def _list_deployments_impl(
         output.append("")
 
     logger.info(f"[list_deployments] Found {len(deployments)} deployments")
-    return "\n".join(output)
+    return _join_result_lines(output)
 
 
 @server.tool(
@@ -824,7 +857,7 @@ async def _update_deployment_impl(
     ]
 
     logger.info(f"[update_deployment] Updated deployment {deployment_id}")
-    return "\n".join(output)
+    return _join_result_lines(output)
 
 
 async def _delete_deployment_impl(
@@ -890,7 +923,7 @@ async def _list_script_processes_impl(
         output.append("")
 
     logger.info(f"[list_script_processes] Found {len(processes)} processes")
-    return "\n".join(output)
+    return _join_result_lines(output)
 
 
 @server.tool(
@@ -1015,7 +1048,7 @@ async def _list_versions_impl(
         output.append("")
 
     logger.info(f"[list_versions] Found {len(versions)} versions")
-    return "\n".join(output)
+    return _join_result_lines(output)
 
 
 @server.tool(
@@ -1081,7 +1114,7 @@ async def _create_version_impl(
     ]
 
     logger.info(f"[create_version] Created version {version_number}")
-    return "\n".join(output)
+    return _join_result_lines(output)
 
 
 @server.tool(
@@ -1150,7 +1183,7 @@ async def _get_version_impl(
     ]
 
     logger.info(f"[get_version] Retrieved version {ver_num}")
-    return "\n".join(output)
+    return _join_result_lines(output)
 
 
 @server.tool(
@@ -1255,7 +1288,7 @@ async def _get_script_metrics_impl(
         output.append("No metrics data available for this script.")
 
     logger.info(f"[get_script_metrics] Retrieved metrics for {script_id}")
-    return "\n".join(output)
+    return _join_result_lines(output)
 
 
 @server.tool(

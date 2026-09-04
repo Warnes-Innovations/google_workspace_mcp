@@ -21,6 +21,8 @@ from mcp.types import ToolAnnotations
 # Auth & server utilities
 from auth.service_decorator import require_google_service, require_multiple_services
 from core.utils import (
+    as_single_line,
+    sanitize_display_text,
     GOOGLE_API_WRITE_RETRIES,
     OfficeXmlExtractionError,
     extract_office_xml_text,
@@ -121,8 +123,12 @@ async def search_docs(
 
     output = [f"Found {len(files)} Google Docs matching '{query}':"]
     for f in files:
+        # Drive file name of a doc anyone may have shared with the user.
         output.append(
-            f"- {f['name']} (ID: {f['id']}) Modified: {f.get('modifiedTime')} Link: {f.get('webViewLink')}"
+            as_single_line(
+                f"- {f['name']} (ID: {f['id']}) "
+                f"Modified: {f.get('modifiedTime')} Link: {f.get('webViewLink')}"
+            )
         )
     return "\n".join(output)
 
@@ -216,8 +222,14 @@ async def get_doc_content(
                 return ""
             text_lines = []
             if tab_name:
+                # The tab title is remote-chosen and this is a
+                # structured delimiter row, so flatten the title --
+                # NOT the document text that follows it.
                 text_lines.append(
-                    TAB_HEADER_FORMAT.format(tab_name=tab_name, tab_id=tab_id)
+                    TAB_HEADER_FORMAT.format(
+                        tab_name=sanitize_display_text(tab_name),
+                        tab_id=tab_id,
+                    )
                 )
 
             for element in elements:
@@ -335,9 +347,14 @@ async def get_doc_content(
                     f"{len(file_content_bytes)} bytes]"
                 )
 
+    # Only the header rows are flattened. `body_text` is the document
+    # itself, delimited by "--- CONTENT ---", and its line breaks are
+    # the payload.
     header = (
-        f'File: "{file_name}" (ID: {document_id}, Type: {mime_type})\n'
-        f"Link: {web_view_link}\n\n--- CONTENT ---\n"
+        as_single_line(f'File: "{file_name}" (ID: {document_id}, Type: {mime_type})')
+        + "\n"
+        + as_single_line(f"Link: {web_view_link}")
+        + "\n\n--- CONTENT ---\n"
     )
     return header + body_text
 
@@ -382,8 +399,12 @@ async def list_docs_in_folder(
         return f"No Google Docs found in folder '{folder_id}'."
     out = [f"Found {len(items)} Docs in folder '{folder_id}':"]
     for f in items:
+        # Same field, same exposure, second call site.
         out.append(
-            f"- {f['name']} (ID: {f['id']}) Modified: {f.get('modifiedTime')} Link: {f.get('webViewLink')}"
+            as_single_line(
+                f"- {f['name']} (ID: {f['id']}) "
+                f"Modified: {f.get('modifiedTime')} Link: {f.get('webViewLink')}"
+            )
         )
     return "\n".join(out)
 
@@ -974,7 +995,12 @@ async def insert_doc_image(
                 return f"Error: File {image_source} is not an image (MIME type: {mime_type})."
 
             image_uri = f"https://drive.google.com/uc?id={image_source}"
-            source_description = f"Drive file {file_metadata.get('name', image_source)}"
+            # The IMAGE file's Drive name, not the document's. It is
+            # rendered into the confirmation row at the end of this
+            # function, far from here.
+            source_description = sanitize_display_text(
+                f"Drive file {file_metadata.get('name', image_source)}"
+            )
         except Exception as e:
             return f"Error: Could not access Drive file {image_source}: {str(e)}"
     else:
@@ -2004,7 +2030,10 @@ async def export_doc_to_pdf(
         return f"Error: Could not access document {document_id}: {str(e)}"
 
     mime_type = file_metadata.get("mimeType", "")
-    original_name = file_metadata.get("name", "Unknown Document")
+    # Drive file name of the source doc, which may have been shared with
+    # this user by someone else. It reaches three separate result rows
+    # below, one of them via the generated PDF filename.
+    original_name = sanitize_display_text(file_metadata.get("name", "Unknown Document"))
     web_view_link = file_metadata.get("webViewLink", "#")
 
     # Verify it's a Google Doc

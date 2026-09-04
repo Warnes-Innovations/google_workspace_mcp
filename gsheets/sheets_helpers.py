@@ -11,7 +11,7 @@ import logging
 import re
 from typing import List, Optional, Union
 
-from core.utils import UserInputError
+from core.utils import UserInputError, as_single_line
 
 logger = logging.getLogger(__name__)
 
@@ -273,6 +273,12 @@ def _quote_sheet_title_for_a1(sheet_title: str) -> str:
     If the sheet title contains special characters or spaces, it is wrapped in single quotes.
     Any single quotes in the title are escaped by doubling them, as required by Google Sheets.
     """
+    # DELIBERATELY NOT flattened here. This function also builds the A1
+    # ranges that _clamp_a1_read_rows and _a1_range_for_values send BACK
+    # to the Sheets API, so altering a character inside the sheet name
+    # would silently address the wrong sheet. The display exposure is
+    # handled where the title is RENDERED -- every row and section header
+    # that carries an A1 label is flattened at its line boundary.
     if SHEET_TITLE_SAFE_RE.fullmatch(sheet_title or ""):
         return sheet_title
     escaped = (sheet_title or "").replace("'", "''")
@@ -578,14 +584,15 @@ def _format_sheet_error_section(
         cell = item.get("cell") or "(unknown cell)"
         error_type = item.get("type")
         message = item.get("message")
+        # `message` quotes formula/argument text authored in the sheet.
         if error_type and message:
-            lines.append(f"- {cell}: {error_type} — {message}")
+            lines.append(as_single_line(f"- {cell}: {error_type} — {message}"))
         elif message:
-            lines.append(f"- {cell}: {message}")
+            lines.append(as_single_line(f"- {cell}: {message}"))
         elif error_type:
-            lines.append(f"- {cell}: {error_type}")
+            lines.append(as_single_line(f"- {cell}: {error_type}"))
         else:
-            lines.append(f"- {cell}: (unknown error)")
+            lines.append(as_single_line(f"- {cell}: (unknown error)"))
 
     suffix = (
         f"\n... and {len(errors) - max_details} more errors"
@@ -593,7 +600,9 @@ def _format_sheet_error_section(
         else ""
     )
     return (
-        f"\n\nDetailed cell errors in range '{range_label}':\n"
+        "\n\n"
+        + as_single_line(f"Detailed cell errors in range '{range_label}':")
+        + "\n"
         + "\n".join(lines)
         + suffix
     )
@@ -611,15 +620,22 @@ def _format_sheet_hyperlink_section(
     lines = []
     for item in hyperlinks[:max_details]:
         cell = item.get("cell") or "(unknown cell)"
+        # Stored in the cell by whoever edited it; not validated here.
         url = item.get("url") or "(missing url)"
-        lines.append(f"- {cell}: {url}")
+        lines.append(as_single_line(f"- {cell}: {url}"))
 
     suffix = (
         f"\n... and {len(hyperlinks) - max_details} more hyperlinks"
         if len(hyperlinks) > max_details
         else ""
     )
-    return f"\n\nHyperlinks in range '{range_label}':\n" + "\n".join(lines) + suffix
+    return (
+        "\n\n"
+        + as_single_line(f"Hyperlinks in range '{range_label}':")
+        + "\n"
+        + "\n".join(lines)
+        + suffix
+    )
 
 
 def _color_to_hex(color: Optional[dict]) -> Optional[str]:
@@ -715,7 +731,11 @@ def _summarize_conditional_rule(
             fmt_parts.append(f"text {fg_hex}")
         fmt_desc = ", ".join(fmt_parts) if fmt_parts else "no format"
 
-        return f"[{index}] {cond_type}{value_desc} -> {fmt_desc} on {', '.join(range_labels)}"
+        # value_desc carries userEnteredValue from the stored rule.
+        return as_single_line(
+            f"[{index}] {cond_type}{value_desc} -> {fmt_desc} "
+            f"on {', '.join(range_labels)}"
+        )
 
     if "gradientRule" in rule:
         gradient_rule = rule["gradientRule"]
@@ -734,9 +754,13 @@ def _summarize_conditional_rule(
                 point_desc += f" {color_hex}"
             points.append(point_desc)
         gradient_desc = " | ".join(points) if points else "gradient"
-        return f"[{index}] gradient -> {gradient_desc} on {', '.join(range_labels)}"
+        # type_desc and value_desc are read back from the stored rule
+        # and are NOT re-validated against GRADIENT_POINT_TYPES here.
+        return as_single_line(
+            f"[{index}] gradient -> {gradient_desc} on {', '.join(range_labels)}"
+        )
 
-    return f"[{index}] (unknown rule) on {', '.join(range_labels)}"
+    return as_single_line(f"[{index}] (unknown rule) on {', '.join(range_labels)}")
 
 
 def _format_conditional_rules_section(
@@ -749,12 +773,18 @@ def _format_conditional_rules_section(
     Build a multi-line string describing conditional formatting rules for a sheet.
     """
     if not rules:
-        return f'{indent}Conditional formats for "{sheet_title}": none.'
+        return as_single_line(f'{indent}Conditional formats for "{sheet_title}": none.')
 
-    lines = [f'{indent}Conditional formats for "{sheet_title}" ({len(rules)}):']
+    lines = [
+        as_single_line(
+            f'{indent}Conditional formats for "{sheet_title}" ({len(rules)}):'
+        )
+    ]
     for idx, rule in enumerate(rules):
         lines.append(
-            f"{indent}  {_summarize_conditional_rule(rule, idx, sheet_titles)}"
+            as_single_line(
+                f"{indent}  {_summarize_conditional_rule(rule, idx, sheet_titles)}"
+            )
         )
     return "\n".join(lines)
 
@@ -1051,15 +1081,22 @@ def _format_sheet_notes_section(
     lines = []
     for item in notes[:max_details]:
         cell = item.get("cell") or "(unknown cell)"
+        # Free-form text anyone with edit access wrote into the cell.
         note = item.get("note") or "(empty note)"
-        lines.append(f"- {cell}: {note}")
+        lines.append(as_single_line(f"- {cell}: {note}"))
 
     suffix = (
         f"\n... and {len(notes) - max_details} more notes"
         if len(notes) > max_details
         else ""
     )
-    return f"\n\nCell notes in range '{range_label}':\n" + "\n".join(lines) + suffix
+    return (
+        "\n\n"
+        + as_single_line(f"Cell notes in range '{range_label}':")
+        + "\n"
+        + "\n".join(lines)
+        + suffix
+    )
 
 
 async def _fetch_cell_formulas(
@@ -1129,15 +1166,23 @@ def _format_sheet_formula_section(
     lines = []
     for item in formulas[:max_details]:
         cell = item.get("cell") or "(unknown cell)"
+        # A formula can build a literal line break, e.g.
+        # ="a"&CHAR(10)&"nextPageToken: ...".
         formula = item.get("formula") or "(empty formula)"
-        lines.append(f"- {cell}: {formula}")
+        lines.append(as_single_line(f"- {cell}: {formula}"))
 
     suffix = (
         f"\n... and {len(formulas) - max_details} more formula cells"
         if len(formulas) > max_details
         else ""
     )
-    return f"\n\nFormula cells in range '{range_label}':\n" + "\n".join(lines) + suffix
+    return (
+        "\n\n"
+        + as_single_line(f"Formula cells in range '{range_label}':")
+        + "\n"
+        + "\n".join(lines)
+        + suffix
+    )
 
 
 async def _fetch_grid_metadata(

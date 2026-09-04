@@ -18,7 +18,12 @@ from mcp.types import ToolAnnotations
 # Auth & server utilities
 from auth.service_decorator import require_google_service, require_multiple_services
 from core.server import server
-from core.utils import TransientNetworkError, handle_http_errors
+from core.utils import (
+    TransientNetworkError,
+    as_single_line,
+    handle_http_errors,
+    sanitize_display_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +50,14 @@ async def _resolve_sender(people_service, sender_obj: dict) -> str:
     Fast path: use displayName if the API already provided it.
     Slow path: look up the user via the People API directory and cache the result.
     """
+    # Every return below is a remote participant's chosen display name, and it
+    # leads a result row in both get_messages and search_messages -- the
+    # "organizer display name" miss class. Flattened at this single choke point
+    # so both callers, and any future one, are covered by construction.
     # Fast path — Chat API sometimes provides displayName directly
     display_name = sender_obj.get("displayName")
     if display_name:
-        return display_name
+        return sanitize_display_text(display_name)
 
     user_id = sender_obj.get("name", "")  # e.g. "users/123456789"
     if not user_id:
@@ -70,13 +79,14 @@ async def _resolve_sender(people_service, sender_obj: dict) -> str:
             )
             names = person.get("names", [])
             if names:
-                resolved = names[0].get("displayName", user_id)
+                resolved = sanitize_display_text(names[0].get("displayName", user_id))
                 _cache_sender(user_id, resolved)
                 return resolved
-            # Fall back to email if no name
+            # Fall back to email if no name. The identifier half of the pair
+            # is just as remote-chosen as the name half.
             emails = person.get("emailAddresses", [])
             if emails:
-                resolved = emails[0].get("value", user_id)
+                resolved = sanitize_display_text(emails[0].get("value", user_id))
                 _cache_sender(user_id, resolved)
                 return resolved
         except HttpError as e:
@@ -131,7 +141,9 @@ def _extract_rich_links(msg: dict) -> List[str]:
         if ann.get("type") == "RICH_LINK":
             uri = ann.get("richLinkMetadata", {}).get("uri", "")
             if uri and uri not in text:
-                urls.append(uri)
+                # Annotation data supplied by the message author. It is shaped
+                # like a URL but nothing validates it, so it is remote text.
+                urls.append(sanitize_display_text(uri))
     return urls
 
 
@@ -182,7 +194,12 @@ async def list_spaces(
         space_name = space.get("displayName", "Unnamed Space")
         space_id = space.get("name", "")
         space_type_actual = space.get("spaceType", "UNKNOWN")
-        output.append(f"- {space_name} (ID: {space_id}, Type: {space_type_actual})")
+        # A space is named by whoever created it. One row per space.
+        output.append(
+            as_single_line(
+                f"- {space_name} (ID: {space_id}, Type: {space_type_actual})"
+            )
+        )
 
     return "\n".join(output)
 
@@ -236,7 +253,8 @@ async def get_messages(
     space_info = await asyncio.to_thread(
         chat_service.spaces().get(name=space_id).execute
     )
-    space_name = space_info.get("displayName", "Unknown Space")
+    # Named by whoever created the space; leads the listing header row.
+    space_name = sanitize_display_text(space_info.get("displayName", "Unknown Space"))
 
     # Get messages
     list_params = {"parent": space_id, "pageSize": page_size, "orderBy": order_by}
@@ -273,18 +291,33 @@ async def get_messages(
         text_content = msg.get("text", "No text content")
         msg_name = msg.get("name", "")
 
-        output.append(f"[{create_time}] {sender}:")
-        output.append(f"  {text_content}")
+        output.append(as_single_line(f"[{create_time}] {sender}:"))
+        # The body is NOT flattened -- a Chat message is legitimately
+        # multi-line and mangling it would destroy real content. But it is
+        # rendered INTO this record's structure, right above sibling metadata
+        # rows ("  [linked: ...]", "  [attachment N: ...]", "  [reactions:
+        # ...]", "  (Message ID: ...)"), so an unprefixed second line forges
+        # one of those. Prefixing every body line with "  > " -- the same
+        # convention gslides already uses for multi-line text -- keeps the
+        # content intact while making its extent unambiguous: no body line can
+        # ever take the shape of a metadata row.
+        output.append(
+            "\n".join(f"  > {line}" for line in (text_content.splitlines() or [""]))
+        )
         rich_links = _extract_rich_links(msg)
         for url in rich_links:
-            output.append(f"  [linked: {url}]")
+            output.append(as_single_line(f"  [linked: {url}]"))
         # Show attachments
         attachments = msg.get("attachment", [])
         for idx, att in enumerate(attachments):
+            # contentName and contentType are both supplied by the uploader;
+            # contentType is not a Google-validated enum here.
             att_name = att.get("contentName", "unnamed")
             att_type = att.get("contentType", "unknown type")
             att_resource = att.get("name", "")
-            output.append(f"  [attachment {idx}: {att_name} ({att_type})]")
+            output.append(
+                as_single_line(f"  [attachment {idx}: {att_name} ({att_type})]")
+            )
             if att_resource:
                 output.append(
                     f"  Use download_chat_attachment(message_id='{msg_name}', attachment_index={idx}) to download"
@@ -305,7 +338,9 @@ async def get_messages(
                     symbol = f":{ce.get('uid', '?')}:"
                 count = r.get("reactionCount", 0)
                 parts.append(f"{symbol}x{count}")
-            output.append(f"  [reactions: {', '.join(parts)}]")
+            # `symbol` is whatever the reacting user sent, not a validated
+            # emoji, so this row is remote-controlled too.
+            output.append(as_single_line(f"  [reactions: {', '.join(parts)}]"))
         output.append(f"  (Message ID: {msg_name})\n")
 
     return "\n".join(output)
@@ -552,8 +587,16 @@ async def search_messages(
             f" [attachment: {a.get('contentName', 'unnamed')} ({a.get('contentType', 'unknown type')})]"
             for a in attachments
         )
+        # Unlike get_messages, search_messages inlines the body INTO a
+        # single-line "- [time] sender in 'space': ..." listing row, so here
+        # the body is squarely in scope and is flattened with everything else.
+        # Truncating to 100 chars is not a guard: a lone \r at index 0 is
+        # still inside the slice.
         output.append(
-            f"- [{create_time}] {sender} in '{space_name}': {text_content}{links_suffix}{att_suffix}"
+            as_single_line(
+                f"- [{create_time}] {sender} in '{space_name}': "
+                f"{text_content}{links_suffix}{att_suffix}"
+            )
         )
 
     return "\n".join(output)
@@ -653,8 +696,13 @@ async def download_chat_attachment(
         )
 
     att = attachments[attachment_index]
-    filename = att.get("contentName", "attachment")
-    content_type = att.get("contentType", "application/octet-stream")
+    # Both are uploader-chosen and both are rendered into result rows below
+    # (six sites across the success, stateless and error paths). Flattened
+    # once here rather than at each of the six.
+    filename = sanitize_display_text(att.get("contentName", "attachment"))
+    content_type = sanitize_display_text(
+        att.get("contentType", "application/octet-stream")
+    )
     source = att.get("source", "")
 
     # The media endpoint needs attachmentDataRef.resourceName (e.g.

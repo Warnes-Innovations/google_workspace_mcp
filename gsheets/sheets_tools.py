@@ -14,7 +14,13 @@ from mcp.types import ToolAnnotations
 
 from auth.service_decorator import require_google_service
 from core.server import server
-from core.utils import handle_http_errors, UserInputError, StringList
+from core.utils import (
+    as_single_line,
+    handle_http_errors,
+    sanitize_display_text,
+    UserInputError,
+    StringList,
+)
 from core.comments import create_comment_tools
 from gsheets.sheets_helpers import (
     CONDITION_TYPES,
@@ -87,8 +93,14 @@ async def list_spreadsheets(
     if not files:
         return f"No spreadsheets found for {user_google_email}."
 
+    # Drive file name of a spreadsheet anyone may have shared with the
+    # user. One row per file.
     spreadsheets_list = [
-        f'- "{file["name"]}" (ID: {file["id"]}) | Modified: {file.get("modifiedTime", "Unknown")} | Link: {file.get("webViewLink", "No link")}'
+        as_single_line(
+            f'- "{file["name"]}" (ID: {file["id"]}) '
+            f"| Modified: {file.get('modifiedTime', 'Unknown')} "
+            f"| Link: {file.get('webViewLink', 'No link')}"
+        )
         for file in files
     ]
 
@@ -164,8 +176,13 @@ async def get_spreadsheet_info(
         cols = grid_props.get("columnCount", "Unknown")
         rules = sheet.get("conditionalFormats", []) or []
 
+        # Tab title, set by any editor of the spreadsheet.
         sheets_info.append(
-            f'  - "{sheet_name}" (ID: {sheet_id}) | Size: {rows}x{cols} | Conditional formats: {len(rules)}'
+            as_single_line(
+                f'  - "{sheet_name}" (ID: {sheet_id}) '
+                f"| Size: {rows}x{cols} "
+                f"| Conditional formats: {len(rules)}"
+            )
         )
         if rules:
             sheets_info.append(
@@ -177,7 +194,9 @@ async def get_spreadsheet_info(
     sheets_section = "\n".join(sheets_info) if sheets_info else "  No sheets found"
     text_output = "\n".join(
         [
-            f'Spreadsheet: "{title}" (ID: {spreadsheet_id}) | Locale: {locale}',
+            as_single_line(
+                f'Spreadsheet: "{title}" (ID: {spreadsheet_id}) | Locale: {locale}'
+            ),
             f"Sheets ({len(sheets)}):",
             sheets_section,
         ]
@@ -402,7 +421,9 @@ async def modify_sheet_values(
             .execute
         )
 
-        cleared_range = result.get("clearedRange", range_name)
+        # Google echoes the RESOLVED range, which embeds the stored
+        # sheet title -- remote text wearing an A1 range's clothes.
+        cleared_range = sanitize_display_text(result.get("clearedRange", range_name))
         text_output = f"Successfully cleared range '{cleared_range}' in spreadsheet {spreadsheet_id} for {user_google_email}."
         logger.info(
             f"Successfully cleared range '{cleared_range}' for {user_google_email}."
@@ -947,7 +968,9 @@ async def manage_conditional_formatting(
 
         format_desc = ", ".join(applied_parts) if applied_parts else "format applied"
 
-        sheet_title = target_sheet.get("properties", {}).get("title", "Unknown")
+        sheet_title = sanitize_display_text(
+            target_sheet.get("properties", {}).get("title", "Unknown")
+        )
         state_text = _format_conditional_rules_section(
             sheet_title, new_rules_state, sheet_titles, indent=""
         )
@@ -996,7 +1019,9 @@ async def manage_conditional_formatting(
 
         sheet_props = target_sheet.get("properties", {})
         sheet_id = sheet_props.get("sheetId")
-        sheet_title = sheet_props.get("title", f"Sheet {sheet_id}")
+        sheet_title = sanitize_display_text(
+            sheet_props.get("title", f"Sheet {sheet_id}")
+        )
 
         rules = target_sheet.get("conditionalFormats", []) or []
         if rule_index >= len(rules):
@@ -1155,7 +1180,9 @@ async def manage_conditional_formatting(
 
         sheet_props = target_sheet.get("properties", {})
         sheet_id = sheet_props.get("sheetId")
-        target_sheet_name = sheet_props.get("title", f"Sheet {sheet_id}")
+        target_sheet_name = sanitize_display_text(
+            sheet_props.get("title", f"Sheet {sheet_id}")
+        )
         rules = target_sheet.get("conditionalFormats", []) or []
         if rule_index >= len(rules):
             raise UserInputError(
@@ -1324,7 +1351,10 @@ async def create_sheet(
 
         new_props = response["replies"][0]["duplicateSheet"]["properties"]
         new_id = new_props["sheetId"]
-        new_title = new_props["title"]
+        # When the caller omits sheet_name, Google derives this as
+        # "Copy of <source title>" -- the SOURCE sheet's title, which
+        # this call never supplied.
+        new_title = sanitize_display_text(new_props["title"])
 
         text_output = (
             f"Successfully duplicated '{source_sheet_name}' to '{new_title}' "
@@ -1422,7 +1452,9 @@ async def list_sheet_tables(
 
     tables_found = []
     for sheet in spreadsheet.get("sheets", []):
-        sheet_title = sheet.get("properties", {}).get("title", "Unknown")
+        sheet_title = sanitize_display_text(
+            sheet.get("properties", {}).get("title", "Unknown")
+        )
         for table in sheet.get("tables", []):
             table_id = table.get("tableId")
             name = table.get("name", "Unnamed")
@@ -1438,12 +1470,25 @@ async def list_sheet_tables(
                 col_name = col.get("columnName", "")
                 columns.append(col_name)
 
+            # name, sheet_title and the column header names are all
+            # editor-chosen. Each of the five lines is flattened on its
+            # own so the record keeps its shape while no field can
+            # forge a sixth row.
             tables_found.append(
-                f"  Table ID: {table_id}\n"
-                f"  Name: {name}\n"
-                f"  Sheet: {sheet_title}\n"
-                f"  Range: rows {start_row}-{end_row}, cols {start_col}-{end_col}\n"
-                f"  Columns: {', '.join(columns) if columns else 'N/A'}"
+                "\n".join(
+                    [
+                        as_single_line(f"  Table ID: {table_id}"),
+                        as_single_line(f"  Name: {name}"),
+                        as_single_line(f"  Sheet: {sheet_title}"),
+                        as_single_line(
+                            f"  Range: rows {start_row}-{end_row}, "
+                            f"cols {start_col}-{end_col}"
+                        ),
+                        as_single_line(
+                            f"  Columns: {', '.join(columns) if columns else 'N/A'}"
+                        ),
+                    ]
+                )
             )
 
     if not tables_found:
