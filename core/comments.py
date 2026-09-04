@@ -262,7 +262,10 @@ async def _read_comments_impl(
     if not comments:
         return f"No comments found in {app_name} {file_id}"
 
-    output = [f"Found {len(comments)} comments in {app_name} {file_id}:\\n"]
+    # Two elements, not one with a trailing break: every element is passed
+    # through the one-record-one-line guard before joining, so a break embedded
+    # in an element would be flattened back into a space.
+    output = [f"Found {len(comments)} comments in {app_name} {file_id}:", ""]
 
     for comment in comments:
         author = comment.get("author", {}).get("displayName", "Unknown")
@@ -301,15 +304,15 @@ async def _read_comments_impl(
     # with. Each element of `output` is one record line, so the guard runs at
     # the line boundary rather than on a list of fields.
     #
-    # NOTE, unrelated to this guard and deliberately not changed here: the
-    # separator below is the two-character sequence backslash-n, not a
-    # newline, so this function returns one physical line containing literal
-    # "\n" text (same in the three _impl returns below). That looks like a
-    # pre-existing escaping bug rather than an intent, but changing it changes
-    # every comment tool's output shape, which is out of scope for a security
-    # fix. It does NOT make the forgery moot: a real line break in a comment
-    # body still starts a real new line in the returned string.
-    return "\\n".join(as_single_line(line) for line in output)
+    # The separator is a real newline. It used to be the two-character
+    # sequence backslash-n (upstream 7ce96ed), which made every comment tool
+    # return ONE physical line containing literal "\n" text -- and made the
+    # guard above non-load-bearing, because it strips real line breaks, a
+    # boundary that format never used, while `sanitize_display_text`
+    # deliberately does not escape backslashes. A comment body containing the
+    # literal text "\nAuthor: ..." therefore rendered as an extra record that
+    # was indistinguishable from a genuine one.
+    return "\n".join(as_single_line(line) for line in output)
 
 
 async def _create_comment_impl(
@@ -341,7 +344,16 @@ async def _create_comment_impl(
     )
     created = comment.get("createdTime", "")
 
-    return f"Comment created successfully!\\nComment ID: {comment_id}\\nAuthor: {author}\\nCreated: {created}\\nContent: {comment_content}"
+    return "\n".join(
+        as_single_line(line)
+        for line in (
+            "Comment created successfully!",
+            f"Comment ID: {comment_id}",
+            f"Author: {author}",
+            f"Created: {created}",
+            f"Content: {comment_content}",
+        )
+    )
 
 
 async def _reply_to_comment_impl(
@@ -371,7 +383,16 @@ async def _reply_to_comment_impl(
     )
     created = reply.get("createdTime", "")
 
-    return f"Reply posted successfully!\\nReply ID: {reply_id}\\nAuthor: {author}\\nCreated: {created}\\nContent: {reply_content}"
+    return "\n".join(
+        as_single_line(line)
+        for line in (
+            "Reply posted successfully!",
+            f"Reply ID: {reply_id}",
+            f"Author: {author}",
+            f"Created: {created}",
+            f"Content: {reply_content}",
+        )
+    )
 
 
 async def _resolve_comment_impl(
@@ -401,4 +422,12 @@ async def _resolve_comment_impl(
     )
     created = reply.get("createdTime", "")
 
-    return f"Comment {comment_id} has been resolved successfully.\\nResolve reply ID: {reply_id}\\nAuthor: {author}\\nCreated: {created}"
+    return "\n".join(
+        as_single_line(line)
+        for line in (
+            f"Comment {comment_id} has been resolved successfully.",
+            f"Resolve reply ID: {reply_id}",
+            f"Author: {author}",
+            f"Created: {created}",
+        )
+    )
