@@ -19,6 +19,8 @@ stale against exactly the input that defeats the guard -- which is how U+2028
 survived an earlier version of this work.
 """
 
+import sys
+
 import pytest
 
 from core.utils import _LINE_BREAK_CHARS, as_single_line, sanitize_display_text
@@ -59,8 +61,13 @@ def test_line_break_set_is_exactly_the_splitlines_set():
     Derived from splitlines() rather than from a hand-copied list, so adding a
     character to one side without the other fails here.
     """
+    # The WHOLE codespace, not a bound somebody picked. An earlier version
+    # stopped at U+3000 -- an undocumented cut-off in the one test whose entire
+    # job is "do not miss a break character above U+0020", which is exactly how
+    # U+2028 survived the first attempt at this guard. Sweeping all 1,114,112
+    # code points costs milliseconds and removes the judgement call.
     actually_breaks = {
-        cp for cp in range(0x3000) if len(f"a{chr(cp)}b".splitlines()) > 1
+        cp for cp in range(sys.maxunicode + 1) if len(f"a{chr(cp)}b".splitlines()) > 1
     }
     assert {ord(c) for c in _LINE_BREAK_CHARS} == actually_breaks
 
@@ -74,8 +81,12 @@ def test_every_line_break_character_is_flattened(codepoint):
     guard while its docstring claimed one-record-one-line.
     """
     payload = f"Alice{chr(codepoint)}{FORGED}"
-    assert len(sanitize_display_text(payload).splitlines()) <= 1
-    assert len(as_single_line(payload).splitlines()) <= 1
+    # == 1, not <= 1: the intended property is "one record stays ONE line".
+    # <= 1 is also satisfied by the empty string, so it would pass for a guard
+    # that deleted the value outright -- see the engagement assertions below.
+    assert len(sanitize_display_text(payload).splitlines()) == 1
+    assert len(as_single_line(payload).splitlines()) == 1
+    assert "Alice" in sanitize_display_text(payload)
 
 
 @pytest.mark.parametrize("codepoint", [0x00, 0x01, 0x08, 0x1F, 0x7F])
@@ -132,6 +143,11 @@ def test_gmail_search_results_row_cannot_be_forged():
         headers_by_id={"m1": {"From": payload, "Subject": "hi", "Date": "Mon"}},
     )
     assert forged_lines(out) == []
+    # Engagement: the sanitized value must still be THERE. Without this, a
+    # formatter that stopped reading the field entirely would satisfy
+    # `forged_lines(out) == []` by rendering nothing at all -- mutation-
+    # verified: blanking gchat's displayName survived the whole suite.
+    assert "Alice" in out
     # The prose survives inline -- that is the documented non-goal, and
     # asserting it keeps the test honest about what was and was not fixed.
     assert FORGED in out
@@ -145,6 +161,7 @@ def test_gmail_message_header_stanza_cannot_be_forged():
         message_id="m1",
     )
     assert forged_lines("\n".join(lines)) == []
+    assert any("Q3" in line for line in lines)
 
 
 def test_gmail_thread_attachment_filename_cannot_forge_a_message_row():
@@ -171,7 +188,9 @@ def test_gmail_thread_attachment_filename_cannot_forge_a_message_row():
             }
         ]
     }
-    assert forged_lines(_format_thread_content(thread, "t1")) == []
+    out = _format_thread_content(thread, "t1")
+    assert forged_lines(out) == []
+    assert "ok.pdf" in out
 
 
 def test_gmail_message_body_keeps_its_line_structure():
@@ -209,7 +228,9 @@ def test_contact_display_name_cannot_forge_a_contact_row():
         "resourceName": "people/c1",
         "names": [{"displayName": f"Alice\n{FORGED}\nContact ID: c999"}],
     }
-    assert forged_lines(_format_contact(person)) == []
+    out = _format_contact(person)
+    assert forged_lines(out) == []
+    assert "Alice" in out
 
 
 def test_contact_biography_cannot_forge_a_row():
@@ -220,7 +241,9 @@ def test_contact_biography_cannot_forge_a_row():
         "resourceName": "people/c1",
         "biographies": [{"value": f"line one\n{FORGED}"}],
     }
-    assert forged_lines(_format_contact(person, detailed=True)) == []
+    out = _format_contact(person, detailed=True)
+    assert forged_lines(out) == []
+    assert "line one" in out
 
 
 # --------------------------------------------------------------------------
@@ -232,7 +255,10 @@ def test_event_description_cannot_forge_a_detail_row():
     from gcalendar.calendar_helpers import _format_event_detail_lines
 
     item = {"description": f"Agenda\n{FORGED}", "location": "Room 1"}
-    assert forged_lines(_format_event_detail_lines(item, "- ", "  ")) == []
+    out = _format_event_detail_lines(item, "- ", "  ")
+    assert forged_lines(out) == []
+    assert "Agenda" in out
+    assert "Room 1" in out
 
 
 def test_event_organizer_display_name_and_email_cannot_forge_a_row():
@@ -243,7 +269,10 @@ def test_event_organizer_display_name_and_email_cannot_forge_a_row():
         "organizer": {"displayName": f"Mallory\r{FORGED}", "email": "m@example.com"},
         "creator": {"displayName": "Bob", "email": f"b@example.com {FORGED}"},
     }
-    assert forged_lines(_format_event_detail_lines(item, "- ", "  ")) == []
+    out = _format_event_detail_lines(item, "- ", "  ")
+    assert forged_lines(out) == []
+    assert "Mallory" in out
+    assert "Bob" in out
 
 
 def test_calendar_attendee_block_keeps_one_attendee_per_line():
@@ -256,6 +285,8 @@ def test_calendar_attendee_block_keeps_one_attendee_per_line():
     rendered = _format_attendee_details(attendees)
     assert forged_lines(rendered) == []
     assert len(rendered.splitlines()) == 2
+    assert "a@example.com" in rendered
+    assert "b@example.com" in rendered
 
 
 # --------------------------------------------------------------------------
@@ -270,7 +301,9 @@ def test_task_title_cannot_forge_a_task_row():
         {"id": "t1", "title": f"Buy milk\n{FORGED}", "status": "needsAction"},
         is_placeholder_parent=False,
     )
-    assert forged_lines(serialize_tasks([task], 0)) == []
+    out = serialize_tasks([task], 0)
+    assert forged_lines(out) == []
+    assert "Buy milk" in out
 
 
 def test_task_notes_cannot_forge_a_task_row():
@@ -285,7 +318,9 @@ def test_task_notes_cannot_forge_a_task_row():
         },
         is_placeholder_parent=False,
     )
-    assert forged_lines(serialize_tasks([task], 0)) == []
+    out = serialize_tasks([task], 0)
+    assert forged_lines(out) == []
+    assert "remember" in out
 
 
 # --------------------------------------------------------------------------
@@ -308,7 +343,10 @@ def test_slide_wordart_and_image_source_cannot_forge_an_element_row():
         {"objectId": "e1", "wordArt": {"renderedText": f"Sale\r{FORGED}"}},
         {"objectId": "e2", "image": {"sourceUrl": f"https://x.test\n{FORGED}"}},
     ]
-    assert forged_lines("\n".join(_describe_elements(elements))) == []
+    out = "\n".join(_describe_elements(elements))
+    assert forged_lines(out) == []
+    assert "Sale" in out
+    assert "https://x.test" in out
 
 
 def test_slide_shape_text_keeps_its_own_line_structure():
@@ -356,6 +394,7 @@ async def test_form_response_answer_cannot_forge_a_row():
         response_id="r1",
     )
     assert forged_lines(out) == []
+    assert "yes" in out
 
 
 # --------------------------------------------------------------------------
@@ -402,6 +441,10 @@ async def test_search_result_title_and_meta_tags_cannot_forge_a_row():
             q="flights",
         )
     assert forged_lines(out) == []
+    assert "Cheap Flights" in out
+    assert "https://example.com" in out
+    assert "Book now" in out
+    assert "website" in out
 
 
 # --------------------------------------------------------------------------
@@ -437,6 +480,9 @@ async def test_comment_author_and_body_cannot_forge_a_comment_row():
 
     out = await _read_comments_impl(service, "document", "d1")
     assert forged_lines(out) == []
+    assert "Mallory" in out
+    assert "looks good" in out
+    assert "agreed" in out
 
 
 @pytest.mark.asyncio
@@ -537,6 +583,12 @@ async def test_chat_space_name_cannot_forge_a_space_row():
     }
     out = await _unwrap(list_spaces)(service=service, user_google_email="u@example.com")
     assert forged_lines(out) == []
+    # Engagement: the sanitized value must still be THERE. Without this, a
+    # formatter that stopped reading the field entirely would satisfy
+    # `forged_lines(out) == []` by rendering nothing at all -- mutation-
+    # verified: blanking gchat's displayName survived the whole suite.
+    assert "Team" in out
+    assert "spaces/S1" in out
 
 
 @pytest.mark.asyncio
@@ -571,6 +623,8 @@ async def test_chat_sender_and_attachment_cannot_forge_a_metadata_row():
         space_id="spaces/S",
     )
     assert forged_lines(out) == []
+    assert "Mallory" in out
+    assert "ok.pdf" in out
 
 
 @pytest.mark.asyncio
@@ -638,6 +692,8 @@ async def test_script_project_title_cannot_forge_a_project_row():
     }
     out = await _list_script_projects_impl(service, "u@example.com")
     assert forged_lines(out) == []
+    assert "Utils" in out
+    assert "s1" in out
 
 
 @pytest.mark.asyncio
@@ -672,6 +728,8 @@ async def test_script_creator_email_and_source_preview_cannot_forge_a_row():
     }
     out = await _get_script_project_impl(service, "u@example.com", "s1")
     assert forged_lines(out) == []
+    assert "a@example.com" in out
+    assert "function f()" in out
 
 
 @pytest.mark.asyncio
@@ -717,6 +775,77 @@ async def test_doc_title_cannot_forge_a_search_result_row():
         service=service, user_google_email="u@example.com", query="notes"
     )
     assert forged_lines(out) == []
+    assert "Notes" in out
+    assert "d1" in out
+
+
+def _drive_comment(content, author="Mallory", reply_author="Bob"):
+    return {
+        "author": author,
+        "content": content,
+        "anchor_text": "",
+        "replies": [{"author": reply_author, "content": "ok"}],
+        "resolved": False,
+    }
+
+
+def test_markdown_comment_footnote_cannot_forge_a_record():
+    """gdocs/docs_markdown.py had ZERO guard call sites while the same
+    conceptual data WAS guarded in core/comments.py -- the sweep guarded that
+    file and missed this one. This is reached on `get_doc_as_markdown`'s
+    DEFAULT arguments (include_comments=True, comment_mode="inline").
+    """
+    from gdocs.docs_markdown import _format_footnote
+
+    out = _format_footnote(
+        1, _drive_comment(f"looks good\n{FORGED}", reply_author=f"Bob\n{FORGED}")
+    )
+    assert forged_lines(out) == []
+    assert len(out.splitlines()) == 2, out
+    assert "looks good" in out
+    assert "Mallory" in out
+    assert "Bob" in out
+
+
+def test_markdown_comments_appendix_cannot_forge_a_record():
+    from gdocs.docs_markdown import format_comments_appendix
+
+    out = format_comments_appendix(
+        [_drive_comment(f"looks good\r{FORGED}", author=f"Mallory {FORGED}")]
+    )
+    assert forged_lines(out) == []
+    assert "looks good" in out
+    assert "Mallory" in out
+
+
+def test_markdown_comments_appendix_anchor_cannot_escape_its_blockquote():
+    """The quoted document text, not the comment body.
+
+    A break in the anchor produces an unprefixed line that leaves the "> "
+    blockquote -- a field a per-field list would not have named.
+    """
+    from gdocs.docs_markdown import format_comments_appendix
+
+    comment = _drive_comment("looks good")
+    comment["anchor_text"] = f"the quoted span\n{FORGED}"
+    out = format_comments_appendix([comment])
+    assert forged_lines(out) == []
+    assert "the quoted span" in out
+    quoted = [ln for ln in out.splitlines() if ln.startswith(">")]
+    assert len(quoted) == 1, out
+
+
+def test_markdown_inline_comment_path_cannot_forge_a_record():
+    """End to end through the default comment_mode="inline" renderer."""
+    from gdocs.docs_markdown import format_comments_inline
+
+    comment = _drive_comment(f"looks good\n{FORGED}")
+    comment["anchor_text"] = "anchor"
+    out = format_comments_inline("Body text with anchor here.\n", [comment])
+    assert forged_lines(out) == []
+    assert "looks good" in out
+    # The body survives with the footnote reference spliced into the anchor.
+    assert "Body text with anchor[^c1] here." in out
 
 
 # --------------------------------------------------------------------------
@@ -745,6 +874,8 @@ async def test_spreadsheet_name_cannot_forge_a_listing_row():
         service=service, user_google_email="u@example.com"
     )
     assert forged_lines(out) == []
+    assert "Budget" in out
+    assert "s1" in out
 
 
 def test_cell_note_and_its_a1_label_cannot_forge_a_row():
@@ -761,3 +892,5 @@ def test_cell_note_and_its_a1_label_cannot_forge_a_row():
         range_label=f"'Tab\n{FORGED}'!A1:B2",
     )
     assert forged_lines(out) == []
+    assert "see below" in out
+    assert "Tab" in out
