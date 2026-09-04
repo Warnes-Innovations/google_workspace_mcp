@@ -2,14 +2,21 @@
 
 import json
 import logging
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from urllib.parse import parse_qs, urlparse
 
 import pytest
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import Flow
 
 from auth.google_auth import (
     check_client_secrets,
     create_oauth_flow,
+    handle_auth_callback,
     load_client_secrets_from_env,
     resolve_oauth_client,
+    start_auth_flow,
 )
 from auth.oauth21_session_store import OAuth21SessionStore, SessionContext
 from auth.oauth_types import OAuthVersionDetectionParams
@@ -456,7 +463,14 @@ def test_client_secrets_shape_is_installed_for_a_public_client():
 # --------------------------------------------------------------------------
 
 
-def test_client_key_survives_the_state_round_trip(tmp_path):
+def test_client_key_survives_serialization_to_the_state_file(tmp_path):
+    # NARROW ON PURPOSE: this covers the store's serialization only. It was
+    # previously named ..._survives_the_state_round_trip, which read as though
+    # it joined the producer to the consumer; it does not, and both
+    # `client_key=` arguments could be deleted with this test still green. The
+    # seam itself is covered by
+    # test_client_key_travels_from_start_auth_flow_to_the_callback_exchange.
+    #
     # The callback recovers the client from the persisted state, so the value
     # has to survive serialization to disk, not merely live in memory.
     state_file = tmp_path / "oauth_states.json"
@@ -757,3 +771,193 @@ def test_file_fallback_still_works_when_no_registry_is_configured(
     )
 
     assert flow.client_config["client_id"] == "on-disk-id"
+
+
+# --------------------------------------------------------------------------
+# The seam: producer (start_auth_flow) joined to consumer (handle_auth_callback)
+# --------------------------------------------------------------------------
+
+
+REDIRECT_URI = "http://localhost:8000/oauth2callback"
+SEAM_SCOPES = ["https://www.googleapis.com/auth/userinfo.email"]
+
+
+class _StubCredentialStore:
+    def __init__(self):
+        self.saved = []
+
+    def get_credential(self, user_email):  # noqa: ARG002
+        return None
+
+    def store_credential(self, user_email, credentials):
+        self.saved.append((user_email, credentials))
+        return True
+
+
+def _auth_url_from(message: str) -> str:
+    for line in message.splitlines():
+        if "Authorization URL:" in line:
+            return line.split("Authorization URL:", 1)[1].strip()
+    raise AssertionError(f"no authorization URL in start_auth_flow output:\n{message}")
+
+
+@pytest.fixture
+def seam_harness(monkeypatch, tmp_path):
+    """Everything except the two halves under test.
+
+    The OAuth client registry, the state store and the Flow construction are
+    all REAL -- mocking any of them would mock the seam itself. Only the
+    Google boundary (fetch_token, userinfo) and the credential persistence are
+    stubbed.
+    """
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENTS", json.dumps(THREE_CLIENT_DOC))
+    config = OAuthConfig()
+    monkeypatch.setattr("auth.google_auth.get_oauth_config", lambda: config)
+
+    state_file = tmp_path / "oauth_states.json"
+    store = OAuth21SessionStore(oauth_state_file=str(state_file))
+    monkeypatch.setattr("auth.google_auth.get_oauth21_session_store", lambda: store)
+
+    built_client_ids = []
+
+    class _RecordingFlow(Flow):
+        """A real google-auth-oauthlib Flow that records how it was built."""
+
+        @classmethod
+        def from_client_config(cls, client_config, scopes, **kwargs):
+            section = client_config.get("web") or client_config["installed"]
+            built_client_ids.append(section["client_id"])
+            return super().from_client_config(client_config, scopes, **kwargs)
+
+        @classmethod
+        def from_client_secrets_file(cls, client_secrets_file, scopes, **kwargs):
+            raise AssertionError(
+                f"flow fell back to the client secrets file at {client_secrets_file}"
+            )
+
+        def fetch_token(self, **kwargs):  # noqa: ARG002
+            # The Google boundary. No network.
+            return None
+
+        @property
+        def credentials(self):
+            return Credentials(
+                token="access-token",
+                refresh_token="refresh-token",
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=self.client_config["client_id"],
+                client_secret=self.client_config.get("client_secret") or None,
+                scopes=list(SEAM_SCOPES),
+            )
+
+    monkeypatch.setattr("auth.google_auth.Flow", _RecordingFlow)
+    monkeypatch.setattr(
+        "auth.google_auth.get_current_scopes", lambda: list(SEAM_SCOPES)
+    )
+    monkeypatch.setattr(
+        "auth.google_auth.get_transport_mode", lambda: "streamable-http"
+    )
+    monkeypatch.setattr("auth.google_auth.get_fastmcp_session_id", lambda: None)
+    monkeypatch.setattr(
+        "auth.google_auth._determine_oauth_prompt",
+        AsyncMock(return_value="consent"),
+    )
+    monkeypatch.setattr("auth.google_auth.is_stateless_mode", lambda: False)
+    monkeypatch.setattr(
+        "auth.google_auth.get_credential_store", lambda: _StubCredentialStore()
+    )
+    monkeypatch.setattr(
+        "auth.google_auth.save_credentials_to_session", lambda *args: None
+    )
+
+    return SimpleNamespace(
+        config=config,
+        store=store,
+        state_file=state_file,
+        built_client_ids=built_client_ids,
+    )
+
+
+@pytest.mark.asyncio
+async def test_client_key_travels_from_start_auth_flow_to_the_callback_exchange(
+    monkeypatch, seam_harness
+):
+    """Join the producer of client_key to its consumer.
+
+    The resolver was covered in isolation and the state store was covered in
+    isolation, and nothing joined them: deleting `client_key=oauth_client_key`
+    from the store_oauth_state call, or `client_key=state_info.get("client_key")`
+    from the callback's create_oauth_flow call, each left the FULL suite green.
+    Both mutations fail here.
+
+    analyst@example.com resolves through the 'example.com' domain mapping to
+    the NON-default 'work' client, so a lost key shows up as the default
+    'personal-id' rather than as an error.
+    """
+    monkeypatch.setattr(
+        "auth.google_auth.get_user_info",
+        lambda credentials: {"email": "analyst@example.com"},  # noqa: ARG005
+    )
+
+    message = await start_auth_flow(
+        user_google_email="analyst@example.com",
+        service_name="Gmail",
+        redirect_uri=REDIRECT_URI,
+    )
+
+    # Producer: the authorization URL Google sees carries the work client.
+    query = parse_qs(urlparse(_auth_url_from(message)).query)
+    assert query["client_id"] == ["work-id"]
+    state = query["state"][0]
+
+    # The key is on the PERSISTED state, not just in memory.
+    persisted = json.loads(seam_harness.state_file.read_text())
+    assert persisted[state]["client_key"] == "work"
+
+    # Consumer: the callback rebuilds the flow from that persisted state.
+    user_email, credentials = await handle_auth_callback(
+        scopes=list(SEAM_SCOPES),
+        authorization_response=f"{REDIRECT_URI}?state={state}&code=fake-code",
+        redirect_uri=REDIRECT_URI,
+    )
+
+    assert user_email == "analyst@example.com"
+    # Two flows were built -- one per half -- and BOTH used the work client.
+    # 'personal-id' here would mean the callback silently fell back to the
+    # registry default, which is the failure this test exists to catch.
+    assert seam_harness.built_client_ids == ["work-id", "work-id"]
+    assert credentials.client_id == "work-id"
+
+
+@pytest.mark.asyncio
+async def test_start_auth_flow_refuses_an_account_the_registry_cannot_serve(
+    monkeypatch, seam_harness, secrets_file_on_disk
+):
+    """Fail-closed at the caller, with nothing persisted.
+
+    Nothing asserted that start_auth_flow treats an unresolvable account as an
+    error rather than proceeding. A client_secret.json is deliberately present:
+    the fail-open outcome was a perfectly ordinary-looking authorization URL
+    built from it.
+    """
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENTS", json.dumps(NO_DEFAULT_DOC))
+    config = OAuthConfig()
+    monkeypatch.setattr("auth.google_auth.get_oauth_config", lambda: config)
+
+    with pytest.raises(Exception) as excinfo:
+        await start_auth_flow(
+            user_google_email="stranger@nowhere.test",
+            service_name="Gmail",
+            redirect_uri=REDIRECT_URI,
+        )
+
+    message = str(excinfo.value)
+    # The error must name the unresolvable account, not a missing file.
+    assert "stranger@nowhere.test" in message
+    assert str(secrets_file_on_disk) not in message
+    # No flow was built and no state was persisted for a refused request.
+    assert seam_harness.built_client_ids == []
+    assert (
+        not seam_harness.state_file.exists()
+        or json.loads(seam_harness.state_file.read_text() or "{}") == {}
+    )
