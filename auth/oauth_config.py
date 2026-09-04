@@ -285,8 +285,58 @@ class OAuthConfig:
             path = uri if uri.startswith("/") else f"/{uri}"
         return path or "/oauth2callback"
 
+    def _warn_if_oauth21_cannot_serve_the_whole_registry(self) -> None:
+        """Warn when OAuth 2.1 cannot honour per-account client selection.
+
+        FastMCP's Google provider is configured through process-global
+        environment variables, so it can only ever be bound to one OAuth
+        client. Per-account selection therefore applies to the tool-level
+        (legacy OAuth 2.0) flow only.
+
+        This must run before ``_apply_fastmcp_google_env``'s ``client_id``
+        check, not after it: ``client_id`` is None exactly when a multi-client
+        registry has no default, which is both the worst case (no
+        protocol-level login can be served at all) and the case where this
+        warning is the only signal an operator gets.
+        """
+        registry = self.client_registry
+        if not self.oauth21_enabled or registry is None or len(registry) <= 1:
+            return
+
+        default = registry.default
+        if default is None:
+            logger.warning(
+                "%d OAuth clients are registered and none is marked 'default', "
+                "but OAuth 2.1 binds FastMCP's Google provider to a single "
+                "client. No protocol-level login can be served at all. Set "
+                "'default' in the OAuth client registry (%s), or run one "
+                "deployment per client. The tool-level start_google_auth flow "
+                "is disabled whenever MCP_ENABLE_OAUTH21=true, so it cannot "
+                "cover the remaining accounts.",
+                len(registry),
+                ", ".join(registry.keys),
+            )
+            return
+
+        others = [key for key in registry.keys if key != default.key]
+        logger.warning(
+            "%d OAuth clients are registered, but OAuth 2.1 binds FastMCP's "
+            "Google provider to a single client (%s). Every protocol-level "
+            "login uses that client; accounts that need %s cannot be "
+            "authorized by this deployment. The tool-level start_google_auth "
+            "flow is disabled whenever MCP_ENABLE_OAUTH21=true, so it is not "
+            "an alternative: run one deployment per OAuth client, or unset "
+            "MCP_ENABLE_OAUTH21 to use the tool-level flow, which does honour "
+            "per-account client selection.",
+            len(registry),
+            default.key,
+            ", ".join(others),
+        )
+
     def _apply_fastmcp_google_env(self) -> None:
         """Mirror legacy GOOGLE_* env vars into FastMCP Google provider settings."""
+        self._warn_if_oauth21_cannot_serve_the_whole_registry()
+
         if not self.client_id:
             return
 
@@ -304,24 +354,10 @@ class OAuthConfig:
                 else None,
             )
 
-        # These are process-global, so FastMCP's Google provider can only ever
-        # be bound to one client. Per-account client selection therefore applies
-        # to the tool-level (legacy OAuth 2.0) flow only; under OAuth 2.1 every
-        # protocol-level login goes through the default client. Say so loudly
-        # rather than letting non-default accounts fail at Google.
-        registry = self.client_registry
-        if self.oauth21_enabled and registry is not None and len(registry) > 1:
-            default_key = registry.default.key if registry.default else None
-            logger.warning(
-                "%d OAuth clients are registered, but OAuth 2.1 binds FastMCP's "
-                "Google provider to a single client (%s). Protocol-level logins "
-                "will use that client; accounts mapped to %s can only be "
-                "authorized through the tool-level flow.",
-                len(registry),
-                default_key or "<none>",
-                ", ".join(k for k in registry.keys if k != default_key),
-            )
-
+        # The multi-client limitation these process-global variables impose is
+        # reported by _warn_if_oauth21_cannot_serve_the_whole_registry above,
+        # which runs before the client_id check so the no-default case is
+        # reachable.
         _set_if_absent("FASTMCP_SERVER_AUTH_GOOGLE_CLIENT_ID", self.client_id)
         if self.client_secret:
             _set_if_absent(

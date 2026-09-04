@@ -1,6 +1,7 @@
 """Tests for the multi-client OAuth registry and per-account client selection."""
 
 import json
+import logging
 
 import pytest
 
@@ -34,11 +35,45 @@ THREE_CLIENT_DOC = {
 }
 
 
+# A registry with several clients and NO default. This is the configuration
+# every fail-open bug in this area hides in: there is nothing to fall back to,
+# so any code that treats "could not resolve" as "use the default" ends up
+# using something arbitrary instead of refusing.
+NO_DEFAULT_DOC = {
+    "clients": {
+        "personal": {"client_id": "personal-id", "client_secret": "personal-secret"},
+        "work": {"client_id": "work-id", "client_secret": "work-secret"},
+    },
+    "domains": {"example.com": "work"},
+}
+
+_FASTMCP_ENV_VARS = (
+    "FASTMCP_SERVER_AUTH",
+    "FASTMCP_SERVER_AUTH_GOOGLE_CLIENT_ID",
+    "FASTMCP_SERVER_AUTH_GOOGLE_CLIENT_SECRET",
+    "FASTMCP_SERVER_AUTH_GOOGLE_BASE_URL",
+    "FASTMCP_SERVER_AUTH_GOOGLE_REDIRECT_PATH",
+)
+
+
 @pytest.fixture(autouse=True)
 def clear_registry_env(monkeypatch):
     """Every test starts from an unconfigured environment."""
     for name in REGISTRY_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture
+def pinned_fastmcp_env(monkeypatch):
+    """Stop OAuthConfig's _set_if_absent from leaking into the rest of the run.
+
+    ``_apply_fastmcp_google_env`` writes FASTMCP_* straight into ``os.environ``
+    when they are absent, and monkeypatch cannot undo a write it did not make.
+    Pre-setting them makes every ``_set_if_absent`` a no-op, and monkeypatch
+    restores these.
+    """
+    for name in _FASTMCP_ENV_VARS:
+        monkeypatch.setenv(name, "pinned-by-test")
 
 
 # --------------------------------------------------------------------------
@@ -442,3 +477,92 @@ def test_state_written_without_a_client_key_reads_back_as_none(tmp_path):
 
     assert state_info is not None
     assert state_info.get("client_key") is None
+
+
+# --------------------------------------------------------------------------
+# OAuth 2.1 single-provider warning
+# --------------------------------------------------------------------------
+
+
+def _warnings_from(caplog):
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno >= logging.WARNING
+    ]
+
+
+def _multi_client_warnings(caplog):
+    return [
+        message
+        for message in _warnings_from(caplog)
+        if "OAuth 2.1" in message and "OAuth client" in message
+    ]
+
+
+def test_oauth21_multi_client_warning_fires_when_there_is_no_default(
+    monkeypatch, caplog, pinned_fastmcp_env
+):
+    # The no-default case is the ONE case where this warning is the only
+    # signal an operator gets, and it was exactly the case the warning could
+    # not reach: `if not self.client_id: return` ran first, and client_id is
+    # None precisely when there is no default client.
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENTS", json.dumps(NO_DEFAULT_DOC))
+    monkeypatch.setenv("MCP_ENABLE_OAUTH21", "true")
+
+    with caplog.at_level(logging.WARNING, logger="auth.oauth_config"):
+        config = OAuthConfig()
+
+    assert config.client_id is None  # the condition that suppressed the warning
+    matched = _multi_client_warnings(caplog)
+    assert matched, (
+        f"no multi-client OAuth 2.1 warning emitted: {_warnings_from(caplog)}"
+    )
+
+    text = " ".join(matched)
+    # The dead `default_key or "<none>"` was the tell that this branch had
+    # never run. A message that still renders "<none>" has not been fixed,
+    # only relocated.
+    assert "<none>" not in text
+    assert "default" in text.lower()
+
+
+def test_oauth21_multi_client_warning_does_not_offer_the_disabled_tool_flow(
+    monkeypatch, caplog, pinned_fastmcp_env
+):
+    # core/server.py's start_google_auth returns "disabled when OAuth 2.1 is
+    # enabled" unconditionally, so directing an operator to the tool-level
+    # flow is advice that provably cannot work.
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENTS", json.dumps(THREE_CLIENT_DOC))
+    monkeypatch.setenv("MCP_ENABLE_OAUTH21", "true")
+
+    with caplog.at_level(logging.WARNING, logger="auth.oauth_config"):
+        OAuthConfig()
+
+    matched = _multi_client_warnings(caplog)
+    assert matched, (
+        f"no multi-client OAuth 2.1 warning emitted: {_warnings_from(caplog)}"
+    )
+
+    text = " ".join(matched)
+    assert "personal" in text  # the client every login will actually use
+    assert "contract" in text and "work" in text  # the ones that cannot be used
+    # The remedy must be one that exists: turning OAuth 2.1 off, or running a
+    # deployment per client. Naming the switch is what makes it actionable.
+    assert "MCP_ENABLE_OAUTH21" in text
+    assert "disabled" in text
+
+
+def test_no_multi_client_warning_for_a_single_client_under_oauth21(
+    monkeypatch, caplog, pinned_fastmcp_env
+):
+    # The warning describes a limitation that does not exist with one client;
+    # emitting it there would train operators to ignore it.
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "solo-id")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "solo-secret")
+    monkeypatch.setenv("MCP_ENABLE_OAUTH21", "true")
+
+    with caplog.at_level(logging.WARNING, logger="auth.oauth_config"):
+        OAuthConfig()
+
+    assert _multi_client_warnings(caplog) == []
