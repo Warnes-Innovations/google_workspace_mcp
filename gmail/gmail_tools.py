@@ -3206,32 +3206,41 @@ def _format_thread_content(
         message_id = message.get("id", "")
 
         # Add message to content
+        # The line-level guard on every HEADER row, on top of the per-field
+        # sanitizing above. It is applied per constituent record line rather
+        # than to the whole block, because `body_data` below is opaque content
+        # whose own line structure must survive.
         content_lines.extend(
-            [
+            as_single_line(line)
+            for line in (
                 f"=== Message {i} ===",
                 f"From: {sender}",
                 f"Date: {date}",
-            ]
+            )
         )
         if reply_to:
-            content_lines.append(f"Reply-To: {reply_to}")
+            content_lines.append(as_single_line(f"Reply-To: {reply_to}"))
         content_lines.append(
-            f"To: {to}" if "To" in headers else "To: [not present in Gmail response]"
+            as_single_line(f"To: {to}")
+            if "To" in headers
+            else "To: [not present in Gmail response]"
         )
         content_lines.append(
-            f"Cc: {cc}" if "Cc" in headers else "Cc: [not present in Gmail response]"
+            as_single_line(f"Cc: {cc}")
+            if "Cc" in headers
+            else "Cc: [not present in Gmail response]"
         )
 
         if rfc822_message_id:
-            content_lines.append(f"Message-ID: {rfc822_message_id}")
+            content_lines.append(as_single_line(f"Message-ID: {rfc822_message_id}"))
         if in_reply_to:
-            content_lines.append(f"In-Reply-To: {in_reply_to}")
+            content_lines.append(as_single_line(f"In-Reply-To: {in_reply_to}"))
         if references:
-            content_lines.append(f"References: {references}")
+            content_lines.append(as_single_line(f"References: {references}"))
 
         # Only show subject if it's different from thread subject
         if subject != thread_subject:
-            content_lines.append(f"Subject: {subject}")
+            content_lines.append(as_single_line(f"Subject: {subject}"))
 
         if body_format == "raw":
             content_lines.extend(
@@ -3249,10 +3258,18 @@ def _format_thread_content(
             content_lines.append("--- ATTACHMENTS ---")
             for j, att in enumerate(attachments, 1):
                 size_kb = att["size"] / 1024
-                content_lines.append(
-                    f"{j}. {att['filename']} ({att['mimeType']}, {size_kb:.1f} KB)\n"
-                    f"   Attachment ID: {att['attachmentId']}\n"
-                    f"   Use get_gmail_attachment_content(message_id='{message_id}', attachment_id='{att['attachmentId']}') to download"
+                # Three separate record lines rather than one element carrying
+                # embedded breaks, so each goes through the guard on its own.
+                content_lines.extend(
+                    as_single_line(line)
+                    for line in (
+                        f"{j}. {att['filename']} "
+                        f"({att['mimeType']}, {size_kb:.1f} KB)",
+                        f"   Attachment ID: {att['attachmentId']}",
+                        f"   Use get_gmail_attachment_content("
+                        f"message_id='{message_id}', "
+                        f"attachment_id='{att['attachmentId']}') to download",
+                    )
                 )
             content_lines.append("")
 
@@ -3562,15 +3579,39 @@ async def list_gmail_labels(
         labels = [lab for lab in labels if lab.get("name", "").startswith(prefix)]
 
     if compact:
+        # Two independent guards, because either alone is a single point of
+        # failure:
+        #
+        #  1. `sanitize_display_text` on the remote-controlled name. A label
+        #     name is not self-authored by construction -- a Workspace admin or
+        #     an authorised third-party app can create labels in this mailbox.
+        #  2. json.dumps' DEFAULT ensure_ascii. This site used to pass
+        #     ensure_ascii=False, the only such opt-out in the tree, which left
+        #     U+2028 / U+2029 / U+0085 LITERAL in the output where the default
+        #     escapes them -- so a label named "Invoices<U+2028>nextPageToken:
+        #     ..." forged a second physical row out of a value the plain-text
+        #     branch below already guards.
+        #
+        # "Values wrapped by json.dumps need no guard of their own" is an
+        # allowlist premise elsewhere in this work, and it holds ONLY under the
+        # default. Opting out here quietly falsified it, so the opt-out is
+        # gone. The cost is \uXXXX escapes on legitimate non-ASCII label names;
+        # this branch emits JSON for a parser, and every test here already
+        # reads it with json.loads.
         return json.dumps(
             {
                 "count": len(labels),
                 "labels": sorted(
-                    ({"id": lab["id"], "name": lab["name"]} for lab in labels),
+                    (
+                        {
+                            "id": lab["id"],
+                            "name": sanitize_display_text(lab["name"]),
+                        }
+                        for lab in labels
+                    ),
                     key=lambda lab: lab["name"],
                 ),
             },
-            ensure_ascii=False,
         )
 
     if not labels:

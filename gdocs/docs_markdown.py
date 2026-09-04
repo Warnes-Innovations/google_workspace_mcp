@@ -18,6 +18,8 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from core.utils import as_single_line
+
 logger = logging.getLogger(__name__)
 
 MONO_FONTS = {"Courier New", "Consolas", "Roboto Mono", "Source Code Pro"}
@@ -561,12 +563,22 @@ def format_comments_inline(markdown: str, comments: list[dict[str, Any]]) -> str
     return markdown
 
 
+# Drive comment authors and bodies are chosen by whoever commented -- anyone
+# the document is shared with -- and both formatters below newline-join their
+# rows. A line break in either forges an extra footnote or list item, and
+# `get_doc_as_markdown` reaches here on its DEFAULT arguments
+# (include_comments=True, comment_mode="inline"). The guard runs at the line
+# boundary rather than on a list of fields, so it also covers `anchor_text` and
+# any row added later. Flattening is right for markdown too: a raw break inside
+# a footnote or list item breaks that construct regardless of any attacker.
+
+
 def _format_footnote(num: int, comment: dict[str, Any]) -> str:
     """Format a single footnote."""
     lines = [f"[^c{num}]: **{comment['author']}**: {comment['content']}"]
     for reply in comment.get("replies", []):
         lines.append(f"    - **{reply['author']}**: {reply['content']}")
-    return "\n".join(lines)
+    return "\n".join(as_single_line(line) for line in lines)
 
 
 def format_comments_appendix(comments: list[dict[str, Any]]) -> str:
@@ -586,7 +598,7 @@ def format_comments_appendix(comments: list[dict[str, Any]]) -> str:
             lines.append(f"  - **{reply['author']}**: {reply['content']}")
         lines.append("")
 
-    return "\n".join(lines)
+    return "\n".join(as_single_line(line) for line in lines)
 
 
 def parse_drive_comments(
