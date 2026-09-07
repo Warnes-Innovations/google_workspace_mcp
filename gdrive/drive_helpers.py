@@ -356,6 +356,73 @@ FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
 # RFC 6838 token-style MIME type validation (safe for Drive query interpolation).
 MIME_TYPE_PATTERN = re.compile(r"^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$")
 
+# Drive file/folder IDs are base64url-style, plus the aliases 'root' and
+# 'appDataFolder'. Deliberately an ALLOWLIST rather than a denylist of dangerous
+# characters: it admits no quote, no backslash and no whitespace, so a validated
+# ID cannot break out of a single-quoted Drive query literal no matter what the
+# surrounding query looks like.
+DRIVE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def validate_drive_id(drive_id: str, *, field: str = "file_id") -> str:
+    """
+    Validate a Drive file/folder ID that will be interpolated into a query.
+
+    Interpolating an unvalidated ID into a `q` string is a real, demonstrated
+    injection, not a theoretical one — see escape_drive_query_literal below for
+    the live evidence. A caller passing
+    `root' or trashed = true or 'x` turns `'{folder_id}' in parents and ...
+    trashed=false` into a query whose trashed filter sits behind an OR.
+
+    Impact is bounded — a Drive query can only re-filter files the caller's
+    token already reaches, so this is filter bypass rather than a data-boundary
+    breach — but the filter is the thing the tool promised.
+
+    Args:
+        drive_id: The caller-supplied ID.
+        field: Parameter name, used only to make the error actionable.
+
+    Returns:
+        str: The ID, stripped, once validated.
+
+    Raises:
+        UserInputError: If the value is empty or contains anything outside the
+                        Drive ID character set.
+    """
+    candidate = (drive_id or "").strip()
+    if not candidate:
+        raise UserInputError(f"{field} cannot be empty.")
+    if not DRIVE_ID_PATTERN.fullmatch(candidate):
+        raise UserInputError(
+            f"Invalid {field} '{drive_id}'. A Drive ID contains only letters, "
+            f"digits, '-' and '_' (or the aliases 'root' / 'appDataFolder')."
+        )
+    return candidate
+
+
+def escape_drive_query_literal(value: str) -> str:
+    """
+    Escape a value for use inside a single-quoted Drive query string literal.
+
+    Escapes the BACKSLASH FIRST, then the quote. Order is the whole point: the
+    common `value.replace("'", "\\'")` escapes the quote but leaves a literal
+    backslash untouched, so an input like `x\\' or mimeType = 'application/...'`
+    becomes `x\\\\' or ...` — Drive reads the doubled backslash as one literal
+    backslash, the following quote CLOSES the string, and the rest is parsed as
+    query syntax.
+
+    Verified against the live Drive API on 2026-09-07, with a control:
+      * `name contains 'unterminated`                     -> HTTP 400 Invalid Value
+      * `name contains 'x\\' or name contains 'y'`         -> HTTP 200, accepted
+      * `name contains 'nomatch\\' or mimeType = '...folder'` -> returned a FOLDER
+    A name search cannot return a folder, so the injected clause was not merely
+    tolerated — it was evaluated. Google documents `\\'` as the escape for a
+    quote but does not document whether a literal backslash must be doubled;
+    that undocumented half is where the naive escape fails.
+    """
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
 # Mapping from friendly type names to Google Drive MIME types.
 # Raw MIME type strings (containing '/') are always accepted as-is.
 FILE_TYPE_MIME_MAP: Dict[str, str] = {

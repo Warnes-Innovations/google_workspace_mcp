@@ -244,7 +244,21 @@ async def search_drive_files(
             f"[search_drive_files] Using structured query as-is: '{final_query}'"
         )
     else:
-        # For free text queries, wrap in fullText contains
+        # For free text queries, wrap in fullText contains.
+        #
+        # This escape is INCOMPLETE — it escapes the quote but not the backslash,
+        # so `x\' or mimeType = '...'` closes the literal and injects a clause.
+        # Demonstrated against the live API, and fixed at the gdocs call sites
+        # with escape_drive_query_literal().
+        #
+        # Deliberately NOT fixed here, and this comment exists so a later sweep
+        # does not "fix" it either. This tool accepts structured Drive queries
+        # verbatim by design (see the branch above): a caller who wants arbitrary
+        # query syntax simply writes it. Injecting through free text therefore
+        # grants nothing the documented interface does not already grant, so
+        # there is no constraint to bypass. gdocs' search_docs is different — it
+        # has no passthrough and enforces a mimeType and trashed filter, which
+        # injection escaped; that one was a real bypass and is fixed.
         escaped_query = query.replace("'", "\\'")
         final_query = f"fullText contains '{escaped_query}'"
         logger.debug(
