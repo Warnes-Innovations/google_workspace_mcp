@@ -605,7 +605,16 @@ async def resolve_drive_item(
 
     Returns the selected file ID and its metadata. Raises if shortcut targets loop
     or exceed max_depth to avoid infinite recursion.
+
+    Validates the ID up front. Several callers interpolate the RESOLVED id into a
+    Drive query (`'{id}' in parents ...`), and on the non-shortcut path this
+    function returns the caller's input unchanged — so without this the id
+    reaching those queries was only ever safe because files().get() happened to
+    404 a quote-bearing value first. That is protection by side effect, not a
+    control: it lives in a different function, is not stated anywhere, and
+    disappears the moment a caller resolves an id without fetching it.
     """
+    file_id = validate_drive_id(file_id)
     current_id = file_id
     depth = 0
     fields = BASE_SHORTCUT_FIELDS
