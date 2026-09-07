@@ -1,0 +1,55 @@
+# Copyright (C) 2026 Gregory R. Warnes / Warnes Innovations LLC
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Read by ~/src/agent-config/tools/check_confidential.py
+#
+# One of:
+#   public-bound   — this repository is published, or is intended to be. Scan every
+#                    commit for confidential material.
+#   always-private — this repository will never be published. Skip the scan.
+#
+# ABSENT FILE MEANS public-bound. That default is deliberate: a repository nobody has
+# classified is exactly the one where nobody has considered the question.
+intent: public-bound
+
+# This repository is ALREADY PUBLIC, and a fork of the public
+# taylorwilsdon/google_workspace_mcp. There is no future publication decision to make
+# and no window in which a mistake could be caught before it is visible — anything
+# committed here is disclosed the moment it is pushed.
+#
+# The declaration is therefore not a prediction. It is written down so the scanner
+# stops relying on its fail-closed default: an absent file and a considered
+# `public-bound` produce identical scans but are different statements, and only one of
+# them means somebody looked.
+#
+# WHAT MAKES THIS REPOSITORY PARTICULARLY EXPOSED
+#
+# It is an MCP server for Google Workspace. Working on it means handling OAuth client
+# credentials, account addresses, Cloud project ids, and live Drive/Gmail/Calendar
+# content. None of that belongs in a public tree, and all of it passes through a
+# session working on this code.
+#
+# Two stores were relocated for exactly that reason, and both are reached through
+# ignored relative symlinks into Warnes-Innovations/confidential rather than living
+# here:
+#
+#   .specstory            — SpecStory session transcripts. 5 files were tracked in this
+#                           public repository until 2026-08-31. Nothing sensitive had
+#                           landed in them (verified: no credential patterns in any
+#                           committed revision), but a transcript records whatever was
+#                           on screen, and nobody chooses in advance what a future
+#                           session will contain. That is luck, not a control.
+#
+#   .github/oboe_sessions — OBO session state, which records task titles, descriptions,
+#                           and the shell commands to run them.
+#
+# Note that untracking a file does not remove it from history. The relocation protects
+# what happens next; it does not undo what was already committed.
+#
+# WHAT THIS FILE DOES NOT DO
+#
+# It does not make the repository safe. It selects whether the scanner runs, and the
+# scanner looks for markers of privileged and security-sensitive material — legal
+# working papers, vulnerability assessments, counsel correspondence. It is not a
+# secret scanner and it will not catch a credential pasted into a source file. Secrets
+# never belong in any repository, private ones included.
