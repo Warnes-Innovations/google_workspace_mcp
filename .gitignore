@@ -64,3 +64,16 @@ tmp/
 # Both forms, same reason.
 worktrees
 worktrees/
+
+# OBO session state lives in the private confidential repo, reached through a
+# relative symlink. A session records whatever task is in flight -- item titles,
+# descriptions, and the shell commands to run them -- so in a PUBLIC repo it is
+# an open-ended disclosure channel.
+#
+# All four forms deliberately. A trailing slash restricts a pattern to
+# DIRECTORIES and git does not treat a symlink as one, so the slash-only form
+# stops matching the moment the path becomes a link -- which it now is.
+.github/oboe_sessions
+.github/oboe_sessions/
+.github/obo_sessions
+.github/obo_sessions/
