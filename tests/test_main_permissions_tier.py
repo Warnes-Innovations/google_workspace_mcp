@@ -136,6 +136,7 @@ def test_validate_streamable_http_auth_rejects_unconfigured_oauth21(
         lambda: SimpleNamespace(
             is_oauth21_enabled=lambda: True,
             is_configured=lambda: False,
+            missing_default_client_remedy=lambda: "REMEDY-FROM-CONFIG",
         ),
     )
 
@@ -143,7 +144,12 @@ def test_validate_streamable_http_auth_rejects_unconfigured_oauth21(
         main.validate_streamable_http_auth("streamable-http")
 
     assert exc.value.code == 1
-    assert "requires GOOGLE_OAUTH_CLIENT_ID" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "needs one OAuth client" in err
+    # The remedy is not restated here. Only the config knows which of the two
+    # causes applies, and a literal env-var name pinned in the test is what let
+    # this message drift out of step with the client registry.
+    assert "REMEDY-FROM-CONFIG" in err
 
 
 def test_validate_streamable_http_auth_allows_stdio(monkeypatch):

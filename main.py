@@ -202,9 +202,9 @@ def validate_streamable_http_auth(transport: str) -> None:
     config = get_oauth_config()
     if config.is_oauth21_enabled() and not config.is_configured():
         print(
-            "Error: streamable-http transport with MCP_ENABLE_OAUTH21=true requires "
-            "GOOGLE_OAUTH_CLIENT_ID so OAuth 2.1 protocol authentication can be "
-            "configured.",
+            "Error: streamable-http transport with MCP_ENABLE_OAUTH21=true needs one "
+            "OAuth client for protocol authentication, and none is available. "
+            + config.missing_default_client_remedy(),
             file=sys.stderr,
         )
         sys.exit(1)
