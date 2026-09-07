@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import signal
 import stat
@@ -488,6 +489,83 @@ def install_command(args: argparse.Namespace) -> int:
     return 0
 
 
+REDACTED = "<redacted>"
+
+# Two INDEPENDENT signals, unioned: a value is redacted if EITHER the key looks
+# like it names a credential or the value looks like a known credential format.
+# Neither alone is sufficient. A key list misses a secret under an unexpected
+# name (GOCSPX_THING, MY_PRIVATE_BLOB); a value list misses any credential whose
+# format is not enumerated here, which is most of them. Union, never
+# intersection: whichever signal fires, the value is withheld.
+#
+# Matched as WHOLE WORDS against the key with separators normalised to spaces,
+# never as substrings. A substring test redacts GOOGLE_OAUTH_CLIENT_ID and
+# OAUTHLIB_INSECURE_TRANSPORT, because both contain "AUTH" inside "OAUTH" --
+# neither is a secret, and a guard that hides ordinary settings is one an
+# operator turns off. Over-redaction is a real failure mode here, not a safe
+# default.
+_SECRET_KEY_MARKERS = (
+    "SECRET",
+    "SECRETS",
+    "TOKEN",
+    "PASSWORD",
+    "PASSWD",
+    "CREDENTIAL",
+    "CREDENTIALS",
+    "PRIVATE",
+    "API KEY",
+    "APIKEY",
+    "ACCESS KEY",
+    "AUTH",
+    "SESSION",
+    "SIGNING",
+    "PASSPHRASE",
+)
+
+_SECRET_KEY_RE = re.compile(
+    r"\b(?:" + "|".join(m.replace(" ", r"\s+") for m in _SECRET_KEY_MARKERS) + r")\b"
+)
+
+
+def _normalise_key(key: str) -> str:
+    """Upper-case the key with separators as spaces, for whole-word matching."""
+    return re.sub(r"[^A-Za-z0-9]+", " ", key).upper()
+
+
+# Prefixes of credential formats that actually reach this config. Deliberately
+# anchored: a bare substring match would redact ordinary values containing them.
+_SECRET_VALUE_PATTERNS = (
+    re.compile(r"^GOCSPX-"),  # Google OAuth client secret
+    re.compile(r"^ya29\."),  # Google OAuth access token
+    re.compile(r"^AIza[0-9A-Za-z_-]{35}$"),  # Google API key
+    re.compile(r"^sk-ant-"),  # Anthropic
+    re.compile(r"^sk-(proj-)?[A-Za-z0-9_-]{20,}$"),  # OpenAI
+    re.compile(r"^gh[pousr]_[A-Za-z0-9]{20,}$"),  # GitHub token
+    re.compile(r"^github_pat_"),  # GitHub fine-grained PAT
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY"),  # PEM private key
+)
+
+
+def redact_env_value(key: str, value: str) -> str:
+    """Withhold a config env value that either signal marks as a credential.
+
+    `check-config` prints the [env] block, and that output lands in a terminal,
+    in scrollback, and in anything capturing it. A secret is exposed the moment
+    it is displayed, so the display is the control -- not the operator's memory
+    of which keys are sensitive.
+
+    This does NOT protect the secret anywhere else: the value is still in the
+    config file on disk, still passed to the child process, and still readable
+    by anything that can read the file. Its one guarantee is that `check-config`
+    does not put it on a screen.
+    """
+    if _SECRET_KEY_RE.search(_normalise_key(key)):
+        return REDACTED
+    if any(pattern.search(value) for pattern in _SECRET_VALUE_PATTERNS):
+        return REDACTED
+    return value
+
+
 def print_config_summary(config: WorkspaceMCPConfig) -> None:
     print("Workspace-MCP management configuration:")
     print(f"  command: {' '.join(config.command + config.args)}")
@@ -498,7 +576,7 @@ def print_config_summary(config: WorkspaceMCPConfig) -> None:
     if config.env:
         print("  env:")
         for key, value in config.env.items():
-            print(f"    {key}={value}")
+            print(f"    {key}={redact_env_value(key, value)}")
     print(f"  start_timeout: {config.start_timeout}")
 
 
