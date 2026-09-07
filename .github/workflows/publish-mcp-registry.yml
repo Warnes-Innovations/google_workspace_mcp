@@ -10,6 +10,30 @@ permissions: {}
 
 jobs:
   publish:
+    # DO NOT PUBLISH FROM A FORK.
+    #
+    # This workflow publishes two things under the UPSTREAM project's identity:
+    # PyPI `workspace-mcp` (via Trusted Publishing, hence id-token: write) and
+    # the MCP Registry name `io.github.taylorwilsdon/workspace-mcp` in
+    # server.json. A fork inherits the workflow but not the right to those
+    # names, so a `v*` tag pushed on a fork attempts a release it must not make.
+    #
+    # Two independent signals, and the job runs only if BOTH agree this is
+    # upstream. Fail-closed by construction: the repository-name check is an
+    # exact string comparison, so any repo that is not upstream — a fork, a
+    # rename, a transfer — skips the job even if the `fork` flag is missing or
+    # unexpected for some trigger. The `fork` check is the second layer and can
+    # only ever withhold the publish, never grant it.
+    #
+    # Note `github.event.repository.fork` is the RIGHT flag here and asks a
+    # different question than it does in check-maintainer-edits.yml, where
+    # testing it was a bug. There it was asked to mean "did this PR come from a
+    # contributor's fork" — which it does not, since this repo is itself a fork.
+    # Here the question genuinely is "is the repo running this workflow a fork",
+    # which is exactly what the flag reports.
+    if: >-
+      github.repository == 'taylorwilsdon/google_workspace_mcp'
+      && github.event.repository.fork == false
     runs-on: ubuntu-latest
     permissions:
       contents: read
