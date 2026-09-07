@@ -18,6 +18,8 @@ from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
 from mcp.types import ToolAnnotations
 
+from gdrive.drive_helpers import escape_drive_query_literal, validate_drive_id
+
 # Auth & server utilities
 from auth.service_decorator import require_google_service, require_multiple_services
 from core.utils import (
@@ -104,7 +106,13 @@ async def search_docs(
     logger.info(f"[search_docs] Email={user_google_email}, query_len={len(query)}")
     logger.debug(f"[search_docs] Query='{query}'")
 
-    escaped_query = query.replace("'", "\\'")
+    # Escapes backslash before quote. The previous `.replace("'", "\\'")` left a
+    # literal backslash untouched, so a crafted query closed the string literal
+    # and escaped BOTH constraints this tool enforces — the mimeType filter that
+    # makes it a docs search, and trashed=false. Unlike search_drive_files, this
+    # tool has no structured-query passthrough, so that was a real bypass rather
+    # than a different spelling of a supported feature.
+    escaped_query = escape_drive_query_literal(query)
 
     response = await asyncio.to_thread(
         service.files()
@@ -382,6 +390,11 @@ async def list_docs_in_folder(
     logger.info(
         f"[list_docs_in_folder] Invoked. Email: '{user_google_email}', Folder ID: '{folder_id}'"
     )
+
+    # Validate before interpolating. An allowlist, not an escape: a Drive ID has
+    # no legitimate quote or backslash, so rejecting is both safer and more
+    # honest than trying to neutralise one. Raises before any API call.
+    folder_id = validate_drive_id(folder_id, field="folder_id")
 
     rsp = await asyncio.to_thread(
         service.files()
