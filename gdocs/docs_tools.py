@@ -394,12 +394,12 @@ async def list_docs_in_folder(
     # Validate before interpolating. An allowlist, not an escape: a Drive ID has
     # no legitimate quote or backslash, so rejecting is both safer and more
     # honest than trying to neutralise one. Raises before any API call.
-    folder_id = validate_drive_id(folder_id, field="folder_id")
+    safe_folder_id = validate_drive_id(folder_id, field="folder_id")
 
     rsp = await asyncio.to_thread(
         service.files()
         .list(
-            q=f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.document' and trashed=false",
+            q=f"'{safe_folder_id}' in parents and mimeType='application/vnd.google-apps.document' and trashed=false",
             pageSize=page_size,
             fields="files(id, name, modifiedTime, webViewLink)",
             supportsAllDrives=True,

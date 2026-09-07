@@ -66,6 +66,7 @@ from gdrive.drive_helpers import (
     resolve_drive_item,
     resolve_file_type_mime,
     resolve_folder_id,
+    escape_drive_query_literal,
     resolve_recency_order_by,
     validate_expiration_time,
     validate_share_role,
@@ -246,20 +247,19 @@ async def search_drive_files(
     else:
         # For free text queries, wrap in fullText contains.
         #
-        # This escape is INCOMPLETE — it escapes the quote but not the backslash,
-        # so `x\' or mimeType = '...'` closes the literal and injects a clause.
-        # Demonstrated against the live API, and fixed at the gdocs call sites
-        # with escape_drive_query_literal().
+        # Uses the complete escape even though injection here grants nothing:
+        # this branch only runs for text that did NOT look like a structured
+        # query, and the branch above passes structured queries through verbatim
+        # by design, so a caller wanting query syntax simply writes it.
         #
-        # Deliberately NOT fixed here, and this comment exists so a later sweep
-        # does not "fix" it either. This tool accepts structured Drive queries
-        # verbatim by design (see the branch above): a caller who wants arbitrary
-        # query syntax simply writes it. Injecting through free text therefore
-        # grants nothing the documented interface does not already grant, so
-        # there is no constraint to bypass. gdocs' search_docs is different — it
-        # has no passthrough and enforces a mimeType and trashed filter, which
-        # injection escaped; that one was a real bypass and is fixed.
-        escaped_query = query.replace("'", "\\'")
+        # Fixed anyway, deliberately. "No incomplete escape exists anywhere" is a
+        # far cheaper invariant to hold than "one incomplete escape exists and
+        # here is the argument for why it is acceptable" — the second needs the
+        # argument re-derived by every future reader and every sibling sweep, and
+        # is one refactor away from becoming false. The behaviour change is
+        # strictly a narrowing: free text with a backslash now matches literally
+        # instead of being reinterpreted as query syntax.
+        escaped_query = escape_drive_query_literal(query)
         final_query = f"fullText contains '{escaped_query}'"
         logger.debug(
             f"[search_drive_files] Reformatting free text query '{query}' to '{final_query}'"
@@ -1975,7 +1975,14 @@ async def check_drive_file_public_access(
     logger.debug(f"[check_drive_file_public_access] Searching for {file_name}")
 
     # Search for the file
-    escaped_name = file_name.replace("'", "\\'")
+    # Escapes backslash before quote. The previous `.replace("'", "\\'")` left a
+    # literal backslash untouched, so a crafted file_name closed the literal and
+    # injected a clause — making this tool evaluate a DIFFERENT file and report
+    # that file's sharing state under the caller's filename. For a tool whose
+    # entire output is a security assertion, answering about the wrong object is
+    # the worst available failure: it can report "not publicly shared" about a
+    # file that is.
+    escaped_name = escape_drive_query_literal(file_name)
     query = f"name = '{escaped_name}'"
 
     list_params: Dict[str, Any] = {
