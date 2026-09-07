@@ -13,7 +13,12 @@ from mcp.types import ToolAnnotations
 
 from auth.service_decorator import require_google_service
 from core.server import server
-from core.utils import handle_http_errors, StringList
+from core.utils import (
+    as_single_line,
+    handle_http_errors,
+    sanitize_display_text,
+    StringList,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -140,25 +145,44 @@ async def search_custom(
     if items:
         confirmation_message += "Results:\n"
         for i, item in enumerate(items, start):
-            title = item.get("title", "No title")
-            link = item.get("link", "No link")
-            snippet = item.get("snippet", "No description available").replace("\n", " ")
+            # Every field here is authored by an arbitrary website operator --
+            # the most remote-controlled data in this server. The pre-existing
+            # `.replace("\n", " ")` on the snippet was the right instinct with
+            # the wrong character set: it left \r, \v, \f, \x1c-\x1e, U+0085,
+            # U+2028 and U+2029 intact, and a lone \r forges a row in most
+            # renderings. sanitize_display_text covers all ten.
+            title = sanitize_display_text(item.get("title", "No title"))
+            link = sanitize_display_text(item.get("link", "No link"))
+            snippet = sanitize_display_text(
+                item.get("snippet", "No description available")
+            )
 
-            confirmation_message += f"\n{i}. {title}\n"
-            confirmation_message += f"   URL: {link}\n"
-            confirmation_message += f"   Snippet: {snippet}\n"
+            # The line-level guard, not just the per-field one. Both run: a
+            # per-field guard is only as good as its field list, and these
+            # three rows are assembled here rather than in a helper, so a
+            # field added below would otherwise be unguarded by default.
+            confirmation_message += "\n" + as_single_line(f"{i}. {title}") + "\n"
+            confirmation_message += as_single_line(f"   URL: {link}") + "\n"
+            confirmation_message += as_single_line(f"   Snippet: {snippet}") + "\n"
 
             # Add additional metadata if available
             if "pagemap" in item:
                 pagemap = item["pagemap"]
                 if "metatags" in pagemap and pagemap["metatags"]:
                     metatag = pagemap["metatags"][0]
+                    # Raw <meta> content from the attacker's own HTML. Neither
+                    # is an enum, and the [:10] slice below is a truncation,
+                    # not a guard -- "\rnextPageToken:" fits inside it.
                     if "og:type" in metatag:
-                        confirmation_message += f"   Type: {metatag['og:type']}\n"
-                    if "article:published_time" in metatag:
-                        confirmation_message += (
-                            f"   Published: {metatag['article:published_time'][:10]}\n"
+                        confirmation_message += as_single_line(
+                            f"   Type: {metatag['og:type']}"
                         )
+                        confirmation_message += "\n"
+                    if "article:published_time" in metatag:
+                        confirmation_message += as_single_line(
+                            f"   Published: {metatag['article:published_time'][:10]}"
+                        )
+                        confirmation_message += "\n"
     else:
         confirmation_message += "\nNo results found."
 

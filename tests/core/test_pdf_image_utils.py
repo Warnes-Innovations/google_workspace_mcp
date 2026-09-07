@@ -5,7 +5,12 @@ import io
 import pytest
 
 from tests.helpers import _make_minimal_pdf
-from core.utils import IMAGE_MIME_TYPES, encode_image_content, extract_pdf_text
+from core.utils import (
+    IMAGE_MIME_TYPES,
+    PdfExtractionError,
+    encode_image_content,
+    extract_pdf_text,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -21,8 +26,15 @@ def test_extract_pdf_text_valid():
 
 
 def test_extract_pdf_text_corrupted():
-    result = extract_pdf_text(b"this is not a pdf")
-    assert result is None
+    """A file that is not a readable PDF RAISES; it does not return None.
+
+    None means "readable, but no extractable text" — see
+    test_extract_pdf_text_empty below. Returning it here too would leave the
+    caller reporting a corrupt file as a scanned/image-only one. Fully covered
+    in tests/core/test_pdf_extraction_errors.py.
+    """
+    with pytest.raises(PdfExtractionError):
+        extract_pdf_text(b"this is not a pdf")
 
 
 def test_extract_pdf_text_empty():

@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from core.server import start_google_auth
+from tests.helpers import own_thread_to_thread
 
 
 @pytest.mark.asyncio
@@ -55,7 +56,9 @@ async def test_start_google_auth_preflights_in_stdio(monkeypatch):
     monkeypatch.setattr(
         "auth.oauth_callback_server.get_transport_mode", lambda: "stdio"
     )
-    monkeypatch.setattr("core.server.asyncio.to_thread", fake_to_thread)
+    monkeypatch.setattr(
+        "core.server.asyncio.to_thread", own_thread_to_thread(fake_to_thread)
+    )
     monkeypatch.setattr(
         "core.server.get_oauth_redirect_uri_for_current_mode",
         lambda: "http://localhost:8000/oauth2callback",

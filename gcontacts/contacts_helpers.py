@@ -12,6 +12,8 @@ import logging
 import re
 from typing import Any, Dict, List
 
+from core.utils import as_single_line
+
 logger = logging.getLogger(__name__)
 
 
@@ -257,7 +259,16 @@ def _format_contact(person: Dict[str, Any], detailed: bool = False) -> str:
                 if source_types:
                     lines.append(f"Sources: {', '.join(source_types)}")
 
-    return "\n".join(lines)
+    # Almost everything above is chosen by whoever created the contact -- names,
+    # nicknames, email and phone labels, organization, address, custom-field
+    # keys and values, relation names, biography -- and several (address
+    # formattedValue, biography) are natively multi-line, so no crafting is
+    # needed. Each element of `lines` is one record line by construction, and
+    # contact blocks are concatenated into listings, so a line break forges
+    # further "Contact ID:" records. Guarding at the line boundary here covers
+    # every field including ones added later, rather than a list of the ones
+    # that happened to be known when this was written.
+    return "\n".join(as_single_line(line) for line in lines)
 
 
 def _merge_phones(

@@ -14,7 +14,7 @@ from mcp.types import ToolAnnotations
 
 from auth.service_decorator import require_google_service
 from core.server import server
-from core.utils import handle_http_errors
+from core.utils import as_single_line, handle_http_errors, sanitize_display_text
 
 logger = logging.getLogger(__name__)
 
@@ -152,13 +152,12 @@ async def create_form(
         f"[create_form] Invoked. Email: '{user_google_email}', title_len={len(title)}"
     )
 
+    # forms.create accepts ONLY info.title. Sending info.description or
+    # info.documentTitle makes the API reject the whole request with
+    # HTTP 400 "Only info.title can be set when creating a form. To add items
+    # and change settings, use batchUpdate." Everything else must be applied
+    # afterwards via batchUpdate/updateFormInfo.
     form_body: Dict[str, Any] = {"info": {"title": title}}
-
-    if description:
-        form_body["info"]["description"] = description
-
-    if document_title:
-        form_body["info"]["document_title"] = document_title
 
     created_form = await asyncio.to_thread(
         service.forms().create(body=form_body).execute
@@ -170,9 +169,55 @@ async def create_form(
         "responderUri", f"https://docs.google.com/forms/d/{form_id}/viewform"
     )
 
+    info_updates: Dict[str, Any] = {}
+    update_fields: List[str] = []
+    if description:
+        info_updates["description"] = description
+        update_fields.append("description")
+    if document_title:
+        info_updates["documentTitle"] = document_title
+        update_fields.append("documentTitle")
+
+    follow_up_warning = ""
+    if info_updates:
+        try:
+            await asyncio.to_thread(
+                service.forms()
+                .batchUpdate(
+                    formId=form_id,
+                    body={
+                        "requests": [
+                            {
+                                "updateFormInfo": {
+                                    "info": info_updates,
+                                    "updateMask": ",".join(update_fields),
+                                }
+                            }
+                        ]
+                    },
+                )
+                .execute
+            )
+        except Exception as follow_up_error:
+            # The form EXISTS. Surfacing only the failure would strand the user
+            # with an orphaned form they were never told about, so report both.
+            logger.error(
+                f"[create_form] Form {form_id} was created but the follow-up "
+                f"updateFormInfo failed: {follow_up_error}"
+            )
+            follow_up_warning = (
+                f" WARNING: the form was created, but setting "
+                f"{' and '.join(update_fields)} failed: {follow_up_error}. "
+                f"The form still exists at the Edit URL above - retry with "
+                f"batch_update_form using an 'updateFormInfo' request on form "
+                f"ID {form_id} rather than creating another form."
+            )
+        else:
+            created_form.setdefault("info", {}).update(info_updates)
+
     confirmation_message = f"Successfully created form '{created_form.get('info', {}).get('title', title)}' for {user_google_email}. Form ID: {form_id}. Edit URL: {edit_url}. Responder URL: {responder_url}"
     logger.info(f"Form created successfully for {user_google_email}. ID: {form_id}")
-    return confirmation_message
+    return confirmation_message + follow_up_warning
 
 
 @server.tool(
@@ -202,9 +247,11 @@ async def get_form(service, user_google_email: str, form_id: str) -> str:
     form = await asyncio.to_thread(service.forms().get(formId=form_id).execute)
 
     form_info = form.get("info", {})
-    title = form_info.get("title", "No Title")
-    description = form_info.get("description", "No Description")
-    document_title = form_info.get("documentTitle", title)
+    # All three are authored by whoever built the form; the description is a
+    # natively multi-line field, so it breaks the record with no crafting.
+    title = sanitize_display_text(form_info.get("title", "No Title"))
+    description = sanitize_display_text(form_info.get("description", "No Description"))
+    document_title = sanitize_display_text(form_info.get("documentTitle", title))
 
     edit_url = f"https://docs.google.com/forms/d/{form_id}/edit"
     responder_url = form.get(
@@ -222,8 +269,10 @@ async def get_form(service, user_google_email: str, form_id: str) -> str:
         item_title = serialized_item.get("title", f"Item {item_index}")
         item_type = serialized_item.get("type", "UNKNOWN")
         required_text = " (Required)" if serialized_item.get("required") else ""
+        # Form item titles are authored by whoever built the form, which is not
+        # necessarily this user -- a form can be shared for editing.
         items_summary.append(
-            f"  {item_index}. {item_title} [{item_type}]{required_text}"
+            as_single_line(f"  {item_index}. {item_title} [{item_type}]{required_text}")
         )
 
     items_summary_text = (
@@ -231,17 +280,26 @@ async def get_form(service, user_google_email: str, form_id: str) -> str:
     )
     items_text = json.dumps(serialized_items, indent=2) if serialized_items else "[]"
 
-    result = f"""Form Details for {user_google_email}:
-- Title: "{title}"
-- Description: "{description}"
-- Document Title: "{document_title}"
-- Form ID: {form_id}
-- Edit URL: {edit_url}
-- Responder URL: {responder_url}
-- Items ({len(items)} total):
-{items_summary_text}
-- Items (structured):
-{items_text}"""
+    # The line-level guard on every single-record row, on top of the per-field
+    # sanitizing above. `items_summary_text` and `items_text` are deliberately
+    # NOT flattened: the first is already a list of individually-guarded rows
+    # and the second is a JSON block, both multi-line by design.
+    result = "\n".join(
+        [
+            as_single_line(line)
+            for line in (
+                f"Form Details for {user_google_email}:",
+                f'- Title: "{title}"',
+                f'- Description: "{description}"',
+                f'- Document Title: "{document_title}"',
+                f"- Form ID: {form_id}",
+                f"- Edit URL: {edit_url}",
+                f"- Responder URL: {responder_url}",
+                f"- Items ({len(items)} total):",
+            )
+        ]
+        + [items_summary_text, "- Items (structured):", items_text]
+    )
 
     logger.info(f"Successfully retrieved form for {user_google_email}. ID: {form_id}")
     return result
@@ -345,19 +403,31 @@ async def get_form_response(
         question_response = answer_data.get("textAnswers", {}).get("answers", [])
         if question_response:
             answer_text = ", ".join([ans.get("value", "") for ans in question_response])
-            answer_details.append(f"  Question ID {question_id}: {answer_text}")
+            # Free text typed by an anonymous respondent -- the most directly
+            # attacker-supplied string in this package.
+            answer_details.append(
+                as_single_line(f"  Question ID {question_id}: {answer_text}")
+            )
         else:
             answer_details.append(f"  Question ID {question_id}: No answer provided")
 
     answers_text = "\n".join(answer_details) if answer_details else "  No answers found"
 
-    result = f"""Form Response Details for {user_google_email}:
-- Form ID: {form_id}
-- Response ID: {response_id}
-- Created: {create_time}
-- Last Submitted: {last_submitted_time}
-- Answers:
-{answers_text}"""
+    result = "\n".join(
+        [
+            as_single_line(line)
+            for line in (
+                f"Form Response Details for {user_google_email}:",
+                f"- Form ID: {form_id}",
+                f"- Response ID: {response_id}",
+                f"- Created: {create_time}",
+                f"- Last Submitted: {last_submitted_time}",
+                "- Answers:",
+            )
+        ]
+        # Already a list of individually-guarded rows.
+        + [answers_text]
+    )
 
     logger.info(
         f"Successfully retrieved response for {user_google_email}. Response ID: {response_id}"

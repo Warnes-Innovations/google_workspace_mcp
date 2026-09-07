@@ -1,6 +1,7 @@
 import pytest
 
 from auth.google_auth import GoogleAuthenticationError, get_authenticated_google_service
+from tests.helpers import own_thread_to_thread
 
 
 @pytest.mark.asyncio
@@ -18,7 +19,9 @@ async def test_get_authenticated_google_service_skips_preflight_outside_stdio(
 
     monkeypatch.setattr("auth.google_auth.get_fastmcp_session_id", lambda: None)
     monkeypatch.setattr("auth.google_auth.get_fastmcp_context", None)
-    monkeypatch.setattr("auth.google_auth.asyncio.to_thread", fake_to_thread)
+    monkeypatch.setattr(
+        "auth.google_auth.asyncio.to_thread", own_thread_to_thread(fake_to_thread)
+    )
     monkeypatch.setattr("auth.google_auth.get_credentials", lambda **kwargs: None)
     monkeypatch.setattr(
         "auth.oauth_callback_server.get_transport_mode", lambda: "streamable-http"

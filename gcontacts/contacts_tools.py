@@ -17,7 +17,13 @@ from mcp.types import ToolAnnotations
 
 from auth.service_decorator import require_google_service
 from core.server import server
-from core.utils import UserInputError, handle_http_errors, StringList
+from core.utils import (
+    UserInputError,
+    as_single_line,
+    handle_http_errors,
+    sanitize_display_text,
+    StringList,
+)
 from gcontacts.contacts_helpers import (
     _format_contact,
     _merge_emails,
@@ -1125,17 +1131,22 @@ async def list_contact_groups(
     for group in groups:
         resource_name = group.get("resourceName", "")
         group_id = resource_name.replace("contactGroups/", "")
-        name = group.get("name", "Unnamed")
+        # Free text. A Workspace admin or a synced third-party account can
+        # create groups in this account, and a line break in one forges the
+        # ID/Type/Members rows below plus a fake "Next page token:" line.
+        name = sanitize_display_text(group.get("name", "Unnamed"))
         group_type = group.get("groupType", "USER_CONTACT_GROUP")
         member_count = group.get("memberCount", 0)
 
-        response += f"- {name}\n"
-        response += f"  ID: {group_id}\n"
-        response += f"  Type: {group_type}\n"
-        response += f"  Members: {member_count}\n\n"
+        # The line-level guard as well as the per-field one: a field added to
+        # any of these rows later is otherwise unguarded by default.
+        response += as_single_line(f"- {name}") + "\n"
+        response += as_single_line(f"  ID: {group_id}") + "\n"
+        response += as_single_line(f"  Type: {group_type}") + "\n"
+        response += as_single_line(f"  Members: {member_count}") + "\n\n"
 
     if next_page_token:
-        response += f"Next page token: {next_page_token}"
+        response += as_single_line(f"Next page token: {next_page_token}")
 
     logger.info(f"Found {len(groups)} contact groups for {user_google_email}")
     return response
@@ -1193,22 +1204,27 @@ async def get_contact_group(
         .execute
     )
 
-    name = result.get("name", "Unnamed")
+    # Free text; forges the ID/Type/Total Members rows below.
+    name = sanitize_display_text(result.get("name", "Unnamed"))
     group_type = result.get("groupType", "USER_CONTACT_GROUP")
     member_count = result.get("memberCount", 0)
     member_resource_names = result.get("memberResourceNames", [])
 
     response = f"Contact Group Details for {user_google_email}:\n\n"
-    response += f"Name: {name}\n"
-    response += f"ID: {group_id}\n"
-    response += f"Type: {group_type}\n"
-    response += f"Total Members: {member_count}\n"
+    response += as_single_line(f"Name: {name}") + "\n"
+    response += as_single_line(f"ID: {group_id}") + "\n"
+    response += as_single_line(f"Type: {group_type}") + "\n"
+    response += as_single_line(f"Total Members: {member_count}") + "\n"
 
     if member_resource_names:
-        response += f"\nMembers ({len(member_resource_names)} shown):\n"
+        response += (
+            "\n"
+            + as_single_line(f"Members ({len(member_resource_names)} shown):")
+            + "\n"
+        )
         for member in member_resource_names:
             contact_id = member.replace("people/", "")
-            response += f"  - {contact_id}\n"
+            response += as_single_line(f"  - {contact_id}") + "\n"
 
     logger.info(f"Retrieved contact group {resource_name} for {user_google_email}")
     return response
@@ -1583,12 +1599,14 @@ async def manage_contact_group(
 
         resource_name = result.get("resourceName", "")
         created_group_id = resource_name.replace("contactGroups/", "")
-        created_name = result.get("name", name)
+        # Read back from the server rather than trusted from this call's arg.
+        created_name = sanitize_display_text(result.get("name", name))
 
+        group_type = result.get("groupType", "USER_CONTACT_GROUP")
         response = f"Contact Group Created for {user_google_email}:\n\n"
-        response += f"Name: {created_name}\n"
-        response += f"ID: {created_group_id}\n"
-        response += f"Type: {result.get('groupType', 'USER_CONTACT_GROUP')}\n"
+        response += as_single_line(f"Name: {created_name}") + "\n"
+        response += as_single_line(f"ID: {created_group_id}") + "\n"
+        response += as_single_line(f"Type: {group_type}") + "\n"
 
         logger.info(f"Created contact group for {user_google_email}")
         return response
@@ -1615,11 +1633,12 @@ async def manage_contact_group(
             .execute
         )
 
-        updated_name = result.get("name", name)
+        # Read back from the server rather than trusted from this call's arg.
+        updated_name = sanitize_display_text(result.get("name", name))
 
         response = f"Contact Group Updated for {user_google_email}:\n\n"
-        response += f"Name: {updated_name}\n"
-        response += f"ID: {group_id}\n"
+        response += as_single_line(f"Name: {updated_name}") + "\n"
+        response += as_single_line(f"ID: {group_id}") + "\n"
 
         logger.info(f"Updated contact group {resource_name} for {user_google_email}")
         return response

@@ -20,7 +20,11 @@ from defusedxml import DefusedXmlException, ElementTree as ET
 
 from fastmcp.exceptions import ToolError
 from googleapiclient.errors import HttpError
-from .api_enablement import get_api_enablement_message
+from .api_enablement import (
+    get_activation_url,
+    get_api_enablement_message,
+    is_service_disabled_error,
+)
 from auth.google_auth import GoogleAuthenticationError
 from auth.oauth_config import is_oauth21_enabled, is_external_oauth21_provider
 
@@ -64,6 +68,109 @@ _SUPPORTED_TEXT_CHOICE_NAMESPACES = {
     "http://schemas.microsoft.com/office/word/2012/wordml",
     "http://schemas.microsoft.com/office/drawing/2010/main",
 }
+
+
+# --------------------------------------------------------------------------
+# Result-row forgery guard
+#
+# Tool results in this server are newline-joined lists of records::
+#
+#     - Name: "quarterly report" (ID: abc, Type: ...)
+#     nextPageToken: ...
+#
+# Any field whose value is chosen by a remote party -- a sender's display name,
+# a Subject, a label or filename, a Chat space or author name, a Calendar
+# attendee, a shared contact -- is rendered verbatim into that structure. A
+# value containing a line break forges additional rows and a fake
+# ``nextPageToken:`` line, smuggling attacker-authored text into agent context
+# as though the tool had reported it. Demonstrated against these formatters,
+# not theorised.
+#
+# SCOPE, as of THIS branch -- stated because the previous version of this note
+# asserted the opposite and would have read as coverage that does not exist:
+#
+#   * ``gdrive/`` is NOT guarded here. Verified by grep on this branch: zero
+#     call sites of either function, and no private equivalent, in
+#     gdrive/__init__.py, gdrive/drive_helpers.py or gdrive/drive_tools.py.
+#     Nothing in this package's output is covered by anything in this module.
+#   * ``origin/main`` HAS a private twin -- ``_sanitize_drive_text`` and
+#     ``_as_single_line``, defined at gdrive/drive_helpers.py:1035 and :1065 --
+#     used across drive_helpers.py and drive_tools.py. That branch's
+#     core/utils.py has NEITHER of the two functions below; the work was done
+#     there privately to gdrive and here shared in core.
+#
+# So the duplication the old note described is real, but it lives across two
+# branches rather than inside this tree, and the direction of the gap is the
+# opposite of what it implied: on THIS branch gdrive is wholly unguarded.
+#
+# DEDUPE ME on merge. Whichever way the merge resolves, gdrive should end up
+# importing ``sanitize_display_text`` / ``as_single_line`` from here and its
+# private twin should be deleted -- so the two copies cannot drift, and so a
+# later reader dedupes deliberately rather than discovering it by accident.
+# Until that happens, do not read this module as evidence that gdrive output is
+# guarded on this branch. It is not. gdrive/ is owned by another session and is
+# deliberately untouched here.
+#
+# tests/test_guard_coverage.py::PACKAGES omits gdrive for the same reason.
+# --------------------------------------------------------------------------
+
+# Every character str.splitlines() treats as a line break. Enumerated rather
+# than derived from `ch < " "`, because NEL, LINE SEPARATOR and PARAGRAPH
+# SEPARATOR are all ABOVE U+0020 and silently defeated an earlier version of
+# this guard -- it claimed "one record stays one line" while three characters
+# broke the line anyway.
+#
+# Written with \u escapes rather than literal characters on purpose: U+2028 and
+# U+2029 are invisible in most editors and at least one editing tool silently
+# rewrote them to plain spaces while this module was being authored, which
+# would have shipped a guard whose docstring outran its behaviour.
+_LINE_BREAK_CHARS = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
+
+
+def sanitize_display_text(value: Any) -> str:
+    """Flatten remote-supplied text so it cannot forge result-list structure.
+
+    Every line-break and control character becomes a space, so one record
+    cannot become two.
+
+    What this does NOT do, deliberately, so callers don't over-trust it:
+      * It is not an escape. There is no grammar for this output format and
+        nothing parses it, so escaping quotes would buy a visual cue and
+        nothing more -- while mangling every legitimate name containing a quote
+        or a backslash. Omitted for that reason.
+      * It does not make the text safe. Prompt injection is prose: "ignore
+        previous instructions" needs no special character and passes straight
+        through. Treat all of this content as untrusted input to the model.
+
+    Its one guarantee is structural: the result cannot contain a line break.
+    """
+    text = "" if value is None else str(value)
+    return "".join(
+        " " if (ch < " " or ch == "\x7f" or ch in _LINE_BREAK_CHARS) else ch
+        for ch in text
+    )
+
+
+def as_single_line(line: str) -> str:
+    """Enforce one-record-one-line on an ASSEMBLED result line.
+
+    This is the load-bearing guard, and :func:`sanitize_display_text` on
+    individual fields is defense in depth on top of it -- not the other way
+    round. A per-field guard is only as good as its field list, and the field
+    list was wrong four times in a single package during the gdrive review: an
+    intermediate variable rendered eight lines below its assignment, a
+    "Shared by" line, a container's ``name`` (which did not match a
+    person-shaped grep), and ``mimeType``/``id``/``size``, which were missed by
+    category because they look system-generated. Applying the guard at the line
+    boundary makes the invariant hold for every field, including the ones
+    nobody thought to list and the ones added later.
+
+    Where a record is a multi-line block (a message header stanza, a message
+    with a body), this cannot be applied to the whole block -- apply it per
+    constituent record line, and flatten individually interpolated fields with
+    :func:`sanitize_display_text`.
+    """
+    return sanitize_display_text(line)
 
 
 class TransientNetworkError(Exception):
@@ -323,6 +430,39 @@ def check_credentials_directory_permissions(credentials_dir: str = None) -> None
     )
 
 
+class DocumentExtractionError(Exception):
+    """Raised when a document's bytes cannot be READ at all.
+
+    The common contract for every text extractor in this module: return None
+    when a file is readable but holds no extractable text, and raise when the
+    file itself could not be read. A caller that cannot tell those apart ends
+    up reporting a damaged file as an empty, unsupported or image-only one,
+    which sends the reader looking in the wrong place.
+
+    Format-specific subclasses exist so a caller can word its report for the
+    format at hand; catch this base when the response is the same either way.
+    """
+
+
+class OfficeXmlExtractionError(DocumentExtractionError):
+    """Raised when an Office file cannot be READ.
+
+    Distinct from a valid file that simply contains no text. Callers that cannot
+    tell those apart end up reporting a damaged document as an empty or
+    unsupported one, which sends the reader looking in the wrong place.
+    """
+
+
+class PdfExtractionError(DocumentExtractionError):
+    """Raised when a PDF cannot be READ.
+
+    Distinct from a readable PDF holding no extractable text — a scanned or
+    image-only document. That one is answered with OCR or a download link; a
+    damaged file is not, so the two must not arrive at the caller as the same
+    value.
+    """
+
+
 def _xml_name(tag: str) -> tuple[Optional[str], str]:
     """Return an ElementTree tag's namespace URI and local name."""
     if tag.startswith("{") and "}" in tag:
@@ -400,8 +540,18 @@ def _word_related_text_targets(zf: zipfile.ZipFile, document_root: Any) -> list[
     """Return active Word text parts using OPC relationships, not filenames."""
     try:
         relationships_root = ET.fromstring(zf.read("word/_rels/document.xml.rels"))
-    except (KeyError, ET.ParseError, DefusedXmlException):
+    except KeyError:
+        # ABSENT is not DAMAGED: a .docx with no relationship part simply has no
+        # headers, footers or notes to find. Do NOT merge this into the handler
+        # below, which raises.
         return []
+    except (ET.ParseError, DefusedXmlException) as e:
+        # Every header, footer, footnote and endnote is reached through this
+        # part. Returning [] on a MALFORMED one silently drops all of them and
+        # reports the remaining body text as the whole document.
+        raise OfficeXmlExtractionError(
+            f"member 'word/_rels/document.xml.rels' is not parseable XML: {e}"
+        ) from e
 
     relationships: list[tuple[str, str, str]] = []
     relationships_by_id: dict[str, tuple[str, str]] = {}
@@ -529,8 +679,17 @@ def _alternate_content_skip_set(
 def extract_office_xml_text(file_bytes: bytes, mime_type: str) -> Optional[str]:
     """
     Very light-weight XML scraper for Word, Excel, PowerPoint files.
-    Returns plain-text if something readable is found, else None.
     Uses zipfile + defusedxml.ElementTree.
+
+    Returns:
+        The extracted text, or None if the file is readable but holds no text.
+
+    Raises:
+        OfficeXmlExtractionError: the file could not be read at all — not a ZIP,
+            or its XML will not parse. This is deliberately NOT folded into the
+            None return: "damaged" and "empty" call for different responses from
+            a caller, and conflating them reports a corrupt document as an
+            unsupported or empty one.
     """
     shared_strings: List[str] = []
     ns_excel_main = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -552,9 +711,19 @@ def extract_office_xml_text(file_bytes: bytes, mime_type: str) -> Optional[str]:
                     # missing main part.
                     pass
                 else:
-                    document_root, choice_namespaces = (
-                        _parse_xml_with_choice_namespaces(document_content)
-                    )
+                    try:
+                        document_root, choice_namespaces = (
+                            _parse_xml_with_choice_namespaces(document_content)
+                        )
+                    except (ET.ParseError, DefusedXmlException) as e:
+                        # Parsed here rather than in the member loop below, so the
+                        # loop's member-level handler never sees this failure. Name
+                        # the member anyway: a report that says only "the XML would
+                        # not parse" does not say which part is damaged.
+                        raise OfficeXmlExtractionError(
+                            f"member 'word/document.xml' is not parseable XML "
+                            f"(mime_type: {mime_type}): {e}"
+                        ) from e
                     parsed_members["word/document.xml"] = (
                         document_root,
                         choice_namespaces,
@@ -592,7 +761,15 @@ def extract_office_xml_text(file_bytes: bytes, mime_type: str) -> Optional[str]:
                         "No sharedStrings.xml found in Excel file (this is optional)."
                     )
                 except ET.ParseError as e:
+                    # Absent sharedStrings is optional (KeyError above). MALFORMED
+                    # is not: every t="s" cell resolves through it, so continuing
+                    # would silently produce wrong cell text.
                     logger.error(f"Error parsing sharedStrings.xml: {e}")
+                    raise OfficeXmlExtractionError(
+                        f"sharedStrings.xml is not parseable XML: {e}"
+                    ) from e
+                except OfficeXmlExtractionError:
+                    raise
                 except (
                     Exception
                 ) as e:  # Catch any other unexpected error during sharedStrings parsing
@@ -600,6 +777,9 @@ def extract_office_xml_text(file_bytes: bytes, mime_type: str) -> Optional[str]:
                         f"Unexpected error processing sharedStrings.xml: {e}",
                         exc_info=True,
                     )
+                    raise OfficeXmlExtractionError(
+                        f"could not read sharedStrings.xml: {e}"
+                    ) from e
             else:
                 return None
 
@@ -751,15 +931,41 @@ def extract_office_xml_text(file_bytes: bytes, mime_type: str) -> Optional[str]:
                         pieces.append(sep.join(member_texts))
 
                 except ET.ParseError as e:
+                    # A member that will not parse means we cannot report this
+                    # file's text. Swallowing it here and returning None below
+                    # would present a damaged document as an empty one.
                     logger.warning(
                         f"Could not parse XML in member '{member}' for {mime_type} file: {e}"
                     )
+                    raise OfficeXmlExtractionError(
+                        f"member '{member}' is not parseable XML "
+                        f"(mime_type: {mime_type}): {e}"
+                    ) from e
+                except OfficeXmlExtractionError:
+                    raise
+                except KeyError:
+                    # ABSENT is not DAMAGED, and the difference is the contract:
+                    # this function returns None for a readable file with no
+                    # extractable text, and raises only when the file cannot be
+                    # read. A member that is simply not in the archive is the
+                    # former.
+                    #
+                    # Do NOT merge this into the generic handler below. That one
+                    # raises, so folding these together would report every archive
+                    # lacking an optional member as corrupt.
+                    logger.info(
+                        f"Member '{member}' not present in {mime_type} file; skipping."
+                    )
+                    continue
                 except Exception as e:
                     logger.error(
                         f"Error processing member '{member}' for {mime_type}: {e}",
                         exc_info=True,
                     )
-                    # continue processing other members
+                    raise OfficeXmlExtractionError(
+                        f"could not read member '{member}' "
+                        f"(mime_type: {mime_type}): {e}"
+                    ) from e
 
             if not pieces:  # If no text was extracted at all
                 return None
@@ -768,19 +974,30 @@ def extract_office_xml_text(file_bytes: bytes, mime_type: str) -> Optional[str]:
             text = "\n\n".join(pieces).strip(" ")
             return text or None  # Ensure None is returned if text is empty after strip
 
-    except zipfile.BadZipFile:
+    except zipfile.BadZipFile as e:
         logger.warning(f"File is not a valid ZIP archive (mime_type: {mime_type}).")
-        return None
+        raise OfficeXmlExtractionError(
+            f"not a valid Office file (mime_type: {mime_type}): {e}"
+        ) from e
     except (
         ET.ParseError
     ) as e:  # Catch parsing errors at the top level if zipfile itself is XML-like
         logger.error(f"XML parsing error at a high level for {mime_type}: {e}")
-        return None
+        raise OfficeXmlExtractionError(
+            f"Office file XML could not be parsed (mime_type: {mime_type}): {e}"
+        ) from e
+    except OfficeXmlExtractionError:
+        raise
     except Exception as e:
+        # An unexpected failure is still a failure to READ the file, not evidence
+        # that it holds no text. Surface it rather than letting it masquerade as
+        # an empty document.
         logger.error(
             f"Failed to extract office XML text for {mime_type}: {e}", exc_info=True
         )
-        return None
+        raise OfficeXmlExtractionError(
+            f"could not extract text from Office file (mime_type: {mime_type}): {e}"
+        ) from e
 
 
 IMAGE_MIME_TYPES = {
@@ -797,23 +1014,50 @@ IMAGE_MIME_TYPES = {
 def extract_pdf_text(file_bytes: bytes) -> Optional[str]:
     """
     Extract text from a PDF using pypdf.
-    Returns plain text with pages separated by double newlines, or None on failure.
-    """
-    try:
-        from pypdf import PdfReader
 
+    Returns:
+        The extracted text with pages separated by double newlines, or None if
+        the PDF is READABLE but holds no extractable text — a scanned or
+        image-only document.
+
+    Raises:
+        PdfExtractionError: the file could not be read at all — not a PDF,
+            truncated, encrypted, or otherwise damaged. This is deliberately
+            NOT folded into the None return: "damaged" and "image-only" call
+            for different responses from a caller, and conflating them points
+            the reader at an OCR problem when the file itself is broken.
+    """
+    # Imported outside the try on purpose. pypdf is a hard dependency, so an
+    # ImportError here is a broken environment, not a broken file, and must not
+    # be reported to the user as a damaged PDF.
+    from pypdf import PdfReader
+
+    try:
         reader = PdfReader(io.BytesIO(file_bytes))
-        pages = []
+    except Exception as e:
+        logger.warning(f"Failed to open PDF: {e}")
+        raise PdfExtractionError(
+            f"not a readable PDF ({len(file_bytes)} bytes): {e}"
+        ) from e
+
+    pages: List[str] = []
+    try:
         for page in reader.pages:
             text = page.extract_text()
             if text:
                 pages.append(text)
-        if not pages:
-            return None
-        return "\n\n".join(pages).strip() or None
     except Exception as e:
+        # Reaching a page can fail on its own (an encrypted file, a damaged
+        # page tree) after the header parsed fine. Returning None here would
+        # present a file we could not read as one that merely holds no text.
         logger.warning(f"Failed to extract PDF text: {e}")
+        raise PdfExtractionError(
+            f"PDF page content could not be read ({len(file_bytes)} bytes): {e}"
+        ) from e
+
+    if not pages:
         return None
+    return "\n\n".join(pages).strip() or None
 
 
 def encode_image_content(file_bytes: bytes, mime_type: str) -> str:
@@ -911,14 +1155,21 @@ def handle_http_errors(
                 except HttpError as error:
                     user_google_email = kwargs.get("user_google_email", "N/A")
                     error_details = str(error)
+                    structured_details = getattr(error, "error_details", None)
 
-                    # Check if this is an API not enabled error
-                    if (
-                        error.resp.status == 403
-                        and "accessNotConfigured" in error_details
+                    # Check if this is an API not enabled error.
+                    #
+                    # Google returns HTTP 403 for BOTH "the API is switched off in
+                    # your Cloud project" and "you are not authorized", so this
+                    # branch MUST be evaluated before the generic 401/403 branch
+                    # below. A disabled API is a project configuration problem;
+                    # re-authenticating cannot fix it, and telling the user to do
+                    # so sends them into a consent loop for the wrong problem.
+                    if error.resp.status == 403 and is_service_disabled_error(
+                        error_details, structured_details
                     ):
                         enablement_msg = get_api_enablement_message(
-                            error_details, service_type
+                            error_details, service_type, structured_details
                         )
 
                         if enablement_msg:
@@ -927,10 +1178,18 @@ def handle_http_errors(
                                 f"User: {user_google_email}"
                             )
                         else:
+                            activation_url = get_activation_url(structured_details)
+                            link_hint = (
+                                f"Enable it here: {activation_url}"
+                                if activation_url
+                                else "Please check the Google Cloud Console to enable it."
+                            )
                             message = (
                                 f"API error in {tool_name}: {error}. "
                                 f"The required API is not enabled for your project. "
-                                f"Please check the Google Cloud Console to enable it."
+                                f"{link_hint} "
+                                f"This is NOT an authentication problem - re-authenticating "
+                                f"will not fix it, so do not call 'start_google_auth'."
                             )
                     elif error.resp.status in [401, 403]:
                         # Authentication/authorization errors

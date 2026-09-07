@@ -18,7 +18,12 @@ from googleapiclient.errors import HttpError
 from googleapiclient.discovery import build
 
 from auth.service_decorator import require_google_service
-from core.utils import handle_http_errors, StringList
+from core.utils import (
+    as_single_line,
+    handle_http_errors,
+    sanitize_display_text,
+    StringList,
+)
 from gcalendar.calendar_helpers import (
     _format_event_detail_lines,
     _format_event_time,
@@ -381,7 +386,10 @@ async def list_calendars(service, user_google_email: str) -> str:
         return f"No calendars found for {user_google_email}."
 
     calendars_summary_list = [
-        f'- "{cal.get("summary", "No Summary")}"{" (Primary)" if cal.get("primary") else ""} (ID: {cal["id"]})'
+        as_single_line(
+            f'- "{cal.get("summary", "No Summary")}'
+            f'"{" (Primary)" if cal.get("primary") else ""} (ID: {cal["id"]})'
+        )
         for cal in items
     ]
     text_output = (
@@ -516,21 +524,34 @@ async def get_events(
     # Handle returning detailed output for a single event when requested
     if event_id and detailed:
         item = items[0]
-        summary = item.get("summary", "No Title")
+        summary = sanitize_display_text(item.get("summary", "No Title"))
         start = _format_event_time(item, "start")
         end = _format_event_time(item, "end")
         link = item.get("htmlLink", "No Link")
 
         event_details = (
-            f"Event Details:\n- Title: {summary}\n- Starts: {start}\n- Ends: {end}\n"
+            "\n".join(
+                as_single_line(line)
+                for line in (
+                    "Event Details:",
+                    f"- Title: {summary}",
+                    f"- Starts: {start}",
+                    f"- Ends: {end}",
+                )
+            )
+            + "\n"
         )
+        # Already guarded per constituent record line.
         event_details += _format_event_detail_lines(
             item,
             prefix="- ",
             indent="  ",
             include_attachments=include_attachments,
         )
-        event_details += f"- Event ID: {event_id}\n- Link: {link}"
+        event_details += "\n".join(
+            as_single_line(line)
+            for line in (f"- Event ID: {event_id}", f"- Link: {link}")
+        )
         logger.info(
             f"[get_events] Successfully retrieved detailed event {event_id} for {user_google_email}."
         )
@@ -539,7 +560,7 @@ async def get_events(
     # Handle multiple events or single event with basic output
     event_details_list = []
     for item in items:
-        summary = item.get("summary", "No Title")
+        summary = sanitize_display_text(item.get("summary", "No Title"))
         start_time = _format_event_time(item, "start")
         end_time = _format_event_time(item, "end")
         link = item.get("htmlLink", "No Link")
@@ -548,14 +569,18 @@ async def get_events(
         if detailed:
             # Add detailed information for multiple events
             event_detail_parts = (
-                f'- "{summary}" (Starts: {start_time}, Ends: {end_time})\n'
+                as_single_line(
+                    f'- "{summary}" (Starts: {start_time}, Ends: {end_time})'
+                )
+                + "\n"
+                # Already guarded per constituent record line.
                 + _format_event_detail_lines(
                     item,
                     prefix="  ",
                     indent="    ",
                     include_attachments=include_attachments,
                 )
-                + f"  ID: {item_event_id} | Link: {link}"
+                + as_single_line(f"  ID: {item_event_id} | Link: {link}")
             )
             event_details_list.append(event_detail_parts)
         else:
@@ -565,18 +590,26 @@ async def get_events(
             if meeting_link:
                 basic_line += f" Meeting: {meeting_link}"
             basic_line += f" ID: {item_event_id} | Link: {link}"
-            event_details_list.append(basic_line)
+            event_details_list.append(as_single_line(basic_line))
 
     if event_id:
         # Single event basic output
         text_output = (
-            f"Successfully retrieved event from calendar '{calendar_id}' for {user_google_email}:\n"
+            as_single_line(
+                f"Successfully retrieved event from calendar '{calendar_id}' "
+                f"for {user_google_email}:"
+            )
+            + "\n"
             + "\n".join(event_details_list)
         )
     else:
         # Multiple events output
         text_output = (
-            f"Successfully retrieved {len(items)} events from calendar '{calendar_id}' for {user_google_email}:\n"
+            as_single_line(
+                f"Successfully retrieved {len(items)} events from calendar "
+                f"'{calendar_id}' for {user_google_email}:"
+            )
+            + "\n"
             + "\n".join(event_details_list)
         )
 
@@ -893,7 +926,10 @@ async def _create_event_impl(
             )
         )
     link = created_event.get("htmlLink", "No link available")
-    confirmation_message = f"Successfully created event '{created_event.get('summary', summary)}' for {user_google_email}. Link: {link}"
+    confirmation_message = as_single_line(
+        f"Successfully created event '{created_event.get('summary', summary)}' "
+        f"for {user_google_email}. Link: {link}"
+    )
 
     # Surface the conferencing link (native Meet or third-party add-on) if present
     if add_google_meet or conference_data is not None:
@@ -1162,7 +1198,10 @@ async def _modify_event_impl(
     )
 
     link = updated_event.get("htmlLink", "No link available")
-    confirmation_message = f"Successfully modified event '{updated_event.get('summary', summary)}' (ID: {event_id}) for {user_google_email}. Link: {link}"
+    confirmation_message = as_single_line(
+        f"Successfully modified event '{updated_event.get('summary', summary)}' "
+        f"(ID: {event_id}) for {user_google_email}. Link: {link}"
+    )
 
     # Surface the conferencing link (native Meet or third-party add-on) if present
     if conference_data is not None:
@@ -1290,11 +1329,14 @@ async def _rsvp_event_impl(
         )
     )
 
-    summary = updated_event.get("summary", "Unknown event")
+    summary = sanitize_display_text(updated_event.get("summary", "Unknown event"))
     logger.info(
         f"[rsvp_event] RSVP for event {event_id} set to '{response}' for {user_google_email}."
     )
-    return f"Successfully updated RSVP for '{summary}' (ID: {event_id}) to '{response}' for {user_google_email}."
+    return as_single_line(
+        f"Successfully updated RSVP for '{summary}' (ID: {event_id}) "
+        f"to '{response}' for {user_google_email}."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1679,9 +1721,10 @@ async def _list_ooo_events_impl(
     if not items:
         return f"No out-of-office events found for {user_google_email}."
 
-    lines = [f"Found {len(items)} out-of-office event(s) for {user_google_email}:\n"]
+    # See the Focus Time listing: two elements, not a trailing break.
+    lines = [f"Found {len(items)} out-of-office event(s) for {user_google_email}:", ""]
     for i, item in enumerate(items, 1):
-        summary = item.get("summary", "Out of Office")
+        summary = sanitize_display_text(item.get("summary", "Out of Office"))
         start = item.get("start", {}).get(
             "date", item.get("start", {}).get("dateTime", "N/A")
         )
@@ -1691,7 +1734,7 @@ async def _list_ooo_events_impl(
         event_id = item.get("id", "N/A")
         ooo_props = item.get("outOfOfficeProperties", {})
         decline_mode = ooo_props.get("autoDeclineMode", "N/A")
-        decline_msg = ooo_props.get("declineMessage", "")
+        decline_msg = sanitize_display_text(ooo_props.get("declineMessage", ""))
 
         lines.append(f'{i}. "{summary}" ({start} to {end})')
         lines.append(f"   Auto-decline: {decline_mode}")
@@ -1700,7 +1743,7 @@ async def _list_ooo_events_impl(
         lines.append(f"   Event ID: {event_id}")
         lines.append("")
 
-    return "\n".join(lines).rstrip()
+    return "\n".join(as_single_line(line) for line in lines).rstrip()
 
 
 async def _update_ooo_event_impl(
@@ -1778,12 +1821,17 @@ async def _update_ooo_event_impl(
         "date", updated_event.get("end", {}).get("dateTime", "N/A")
     )
 
-    confirmation = (
-        f"Successfully updated Out of Office event (ID: {event_id}) for {user_google_email}.\n"
-        f"- Summary: {updated_event.get('summary', 'Out of Office')}\n"
-        f"- Start: {start_display}\n"
-        f"- End: {end_display}\n"
-        f"- Link: {link}"
+    ooo_summary = sanitize_display_text(updated_event.get("summary", "Out of Office"))
+    confirmation = "\n".join(
+        as_single_line(line)
+        for line in (
+            f"Successfully updated Out of Office event (ID: {event_id}) "
+            f"for {user_google_email}.",
+            f"- Summary: {ooo_summary}",
+            f"- Start: {start_display}",
+            f"- End: {end_display}",
+            f"- Link: {link}",
+        )
     )
 
     logger.info(
@@ -2132,9 +2180,11 @@ async def _list_focus_time_events_impl(
     if not items:
         return f"No Focus Time events found for {user_google_email}."
 
-    lines = [f"Found {len(items)} Focus Time event(s) for {user_google_email}:\n"]
+    # Two elements rather than a trailing break: every element goes through the
+    # one-record-one-line guard at the join, which would flatten it to a space.
+    lines = [f"Found {len(items)} Focus Time event(s) for {user_google_email}:", ""]
     for i, item in enumerate(items, 1):
-        summary = item.get("summary", "Focus Time")
+        summary = sanitize_display_text(item.get("summary", "Focus Time"))
         start = item.get("start", {}).get(
             "date", item.get("start", {}).get("dateTime", "N/A")
         )
@@ -2144,7 +2194,7 @@ async def _list_focus_time_events_impl(
         event_id = item.get("id", "N/A")
         ft_props = item.get("focusTimeProperties", {})
         decline_mode = ft_props.get("autoDeclineMode", "N/A")
-        decline_msg = ft_props.get("declineMessage", "")
+        decline_msg = sanitize_display_text(ft_props.get("declineMessage", ""))
         chat_st = ft_props.get("chatStatus", "")
 
         lines.append(f'{i}. "{summary}" ({start} to {end})')
@@ -2156,7 +2206,7 @@ async def _list_focus_time_events_impl(
         lines.append(f"   Event ID: {event_id}")
         lines.append("")
 
-    return "\n".join(lines).rstrip()
+    return "\n".join(as_single_line(line) for line in lines).rstrip()
 
 
 async def _update_focus_time_event_impl(
@@ -2250,12 +2300,17 @@ async def _update_focus_time_event_impl(
         "date", updated_event.get("end", {}).get("dateTime", "N/A")
     )
 
-    confirmation = (
-        f"Successfully updated Focus Time event (ID: {event_id}) for {user_google_email}.\n"
-        f"- Summary: {updated_event.get('summary', 'Focus Time')}\n"
-        f"- Start: {start_display}\n"
-        f"- End: {end_display}\n"
-        f"- Link: {link}"
+    ft_summary = sanitize_display_text(updated_event.get("summary", "Focus Time"))
+    confirmation = "\n".join(
+        as_single_line(line)
+        for line in (
+            f"Successfully updated Focus Time event (ID: {event_id}) "
+            f"for {user_google_email}.",
+            f"- Summary: {ft_summary}",
+            f"- Start: {start_display}",
+            f"- End: {end_display}",
+            f"- Link: {link}",
+        )
     )
 
     logger.info(
@@ -2590,6 +2645,6 @@ async def create_calendar(
     )
 
     calendar_id = result["id"]
-    calendar_summary = result.get("summary", summary)
+    calendar_summary = sanitize_display_text(result.get("summary", summary))
     logger.info(f"[create_calendar] Created calendar with ID: {calendar_id}")
-    return f"Created calendar '{calendar_summary}' (ID: {calendar_id})"
+    return as_single_line(f"Created calendar '{calendar_summary}' (ID: {calendar_id})")

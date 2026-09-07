@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 from gforms.forms_tools import (
     _batch_update_form_impl,
     _serialize_form_item,
+    create_form,
     get_form,
     set_publish_settings,
 )
@@ -394,3 +395,126 @@ async def test_set_publish_settings_defaults_publish_and_accept():
         "isPublished": True,
         "isAcceptingResponses": True,
     }
+
+
+def _make_create_form_service():
+    """Mock Forms service whose create() mimics the real API's restriction.
+
+    forms.create accepts ONLY info.title; anything else is rejected with
+    HTTP 400 "Only info.title can be set when creating a form."
+    """
+    mock_service = Mock()
+
+    def _create(body=None, **_kwargs):
+        info = (body or {}).get("info", {})
+        extra = set(info) - {"title"}
+        if extra:
+            raise AssertionError(
+                "forms.create was sent fields the API rejects: "
+                f"{sorted(extra)} - HTTP 400 'Only info.title can be set when "
+                "creating a form. To add items and change settings, use "
+                "batchUpdate.'"
+            )
+        call = Mock()
+        call.execute.return_value = {
+            "formId": "form_new_1",
+            "info": {"title": info.get("title")},
+            "responderUri": "https://docs.google.com/forms/d/form_new_1/viewform",
+        }
+        return call
+
+    mock_service.forms.return_value.create.side_effect = _create
+    mock_service.forms.return_value.batchUpdate.return_value.execute.return_value = {
+        "replies": [{}]
+    }
+    return mock_service
+
+
+@pytest.mark.asyncio
+async def test_create_form_applies_description_via_batch_update():
+    """description/document_title must go through batchUpdate, not create.
+
+    Regression test for the HTTP 400 the Forms API returns when create() is
+    sent anything beyond info.title.
+    """
+    mock_service = _make_create_form_service()
+
+    result = await create_form.__wrapped__.__wrapped__(
+        mock_service,
+        "user@example.com",
+        "Survey",
+        description="A description",
+        document_title="Tab title",
+    )
+
+    _, create_kwargs = mock_service.forms.return_value.create.call_args
+    assert create_kwargs["body"] == {"info": {"title": "Survey"}}
+
+    _, update_kwargs = mock_service.forms.return_value.batchUpdate.call_args
+    assert update_kwargs["formId"] == "form_new_1"
+    assert update_kwargs["body"]["requests"] == [
+        {
+            "updateFormInfo": {
+                "info": {
+                    "description": "A description",
+                    "documentTitle": "Tab title",
+                },
+                "updateMask": "description,documentTitle",
+            }
+        }
+    ]
+
+    assert "Successfully created form 'Survey'" in result
+    assert "form_new_1" in result
+    assert "WARNING" not in result
+
+
+@pytest.mark.asyncio
+async def test_create_form_description_only_uses_narrow_update_mask():
+    """Only the supplied fields belong in the updateMask."""
+    mock_service = _make_create_form_service()
+
+    await create_form.__wrapped__.__wrapped__(
+        mock_service,
+        "user@example.com",
+        "Survey",
+        description="Only a description",
+    )
+
+    _, update_kwargs = mock_service.forms.return_value.batchUpdate.call_args
+    request = update_kwargs["body"]["requests"][0]["updateFormInfo"]
+    assert request["updateMask"] == "description"
+    assert request["info"] == {"description": "Only a description"}
+
+
+@pytest.mark.asyncio
+async def test_create_form_without_optional_fields_skips_batch_update():
+    """No description/document_title means no follow-up call at all."""
+    mock_service = _make_create_form_service()
+
+    result = await create_form.__wrapped__.__wrapped__(
+        mock_service, "user@example.com", "Survey"
+    )
+
+    mock_service.forms.return_value.batchUpdate.assert_not_called()
+    assert "Successfully created form 'Survey'" in result
+
+
+@pytest.mark.asyncio
+async def test_create_form_reports_form_id_when_follow_up_fails():
+    """A failed follow-up must not hide the fact that the form was created."""
+    mock_service = _make_create_form_service()
+    mock_service.forms.return_value.batchUpdate.side_effect = RuntimeError("boom")
+
+    result = await create_form.__wrapped__.__wrapped__(
+        mock_service,
+        "user@example.com",
+        "Survey",
+        description="A description",
+    )
+
+    assert "Successfully created form" in result
+    assert "form_new_1" in result
+    assert "WARNING" in result
+    assert "boom" in result
+    assert "batch_update_form" in result

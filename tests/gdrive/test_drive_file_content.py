@@ -134,6 +134,49 @@ async def test_get_drive_file_content_pdf_empty(mock_resolve):
         )
 
     assert "get_drive_file_download_url" in result
+    # A readable-but-textless PDF is NOT damaged; it must not say so.
+    assert "damaged" not in result
+
+
+@pytest.mark.asyncio
+async def test_get_drive_file_content_pdf_corrupt_reports_damaged(mock_resolve):
+    """A corrupt PDF is reported as damaged, not as scanned/image-only.
+
+    These two used to be indistinguishable at the call site because
+    extract_pdf_text returned None for both, so a file that would not open was
+    described as one that merely has no text layer — sending the reader after
+    an OCR problem that is not there.
+    """
+    mock_service = Mock()
+    mock_service.files().get_media.return_value = "req"
+
+    with _patch_downloader(b"%PDF-1.4 truncated and mangled"):
+        result = await _unwrap(get_drive_file_content)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            file_id="file123",
+        )
+
+    assert "damaged" in result
+    assert "not a valid PDF" in result
+    assert "scanned/image-only" not in result
+
+
+@pytest.mark.asyncio
+async def test_get_drive_file_content_pdf_not_a_pdf_at_all(mock_resolve):
+    """Bytes that are not a PDF at all take the damaged path too."""
+    mock_service = Mock()
+    mock_service.files().get_media.return_value = "req"
+
+    with _patch_downloader(b"this is plainly not a pdf"):
+        result = await _unwrap(get_drive_file_content)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            file_id="file123",
+        )
+
+    assert "damaged" in result
+    assert "scanned/image-only" not in result
 
 
 # ---------------------------------------------------------------------------

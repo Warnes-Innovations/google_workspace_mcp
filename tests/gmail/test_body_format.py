@@ -362,6 +362,67 @@ class TestExtractMessageBodies:
         assert bodies["html"] == "<p>Nested HTML</p>"
 
 
+class TestExtractMessageBodiesDamagedVsEmpty:
+    """A body part that will not DECODE is not a message without a body.
+
+    Same conflation as extract_pdf_text / extract_office_xml_text: a damaged
+    input used to produce the same value ("") as a legitimately empty one, so
+    _format_body_content reported "[No readable content found]" for a message
+    that does have a body we simply could not read.
+    """
+
+    UNDECODABLE = "YWJjZGU"  # 7 base64 chars — incorrect padding
+
+    def test_undecodable_sole_body_is_reported_as_damaged(self):
+        payload = {
+            "mimeType": "text/plain",
+            "body": {"data": self.UNDECODABLE},
+        }
+        bodies = _extract_message_bodies(payload)
+        assert "could not be decoded" in bodies["text"]
+        assert "damaged" in bodies["text"]
+
+    def test_damaged_marker_survives_formatting(self):
+        """End to end: the reader must not be told there is no content."""
+        payload = {
+            "mimeType": "text/plain",
+            "body": {"data": self.UNDECODABLE},
+        }
+        bodies = _extract_message_bodies(payload)
+        rendered = _format_body_content(bodies["text"], bodies["html"])
+        assert rendered != "[No readable content found]"
+        assert "damaged" in rendered
+
+    def test_undecodable_part_in_multipart_is_reported(self):
+        payload = {
+            "mimeType": "multipart/alternative",
+            "parts": [
+                {"mimeType": "text/plain", "body": {"data": self.UNDECODABLE}},
+            ],
+        }
+        bodies = _extract_message_bodies(payload)
+        assert "damaged" in bodies["text"]
+
+    def test_genuinely_empty_message_is_still_empty(self):
+        """The other half of the distinction: no decode failure, no marker."""
+        bodies = _extract_message_bodies({})
+        assert bodies["text"] == ""
+        assert bodies["html"] == ""
+
+    def test_readable_part_wins_over_a_damaged_sibling(self):
+        """If anything was recovered, report it — do not shout 'damaged'."""
+        payload = {
+            "mimeType": "multipart/alternative",
+            "parts": [
+                {"mimeType": "text/plain", "body": {"data": _encode("Readable")}},
+                {"mimeType": "text/html", "body": {"data": self.UNDECODABLE}},
+            ],
+        }
+        bodies = _extract_message_bodies(payload)
+        assert bodies["text"] == "Readable"
+        assert bodies["html"] == ""
+
+
 @pytest.mark.asyncio
 async def test_get_gmail_message_content_returns_raw_mime():
     service = _build_service(

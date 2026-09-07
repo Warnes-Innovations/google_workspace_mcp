@@ -15,6 +15,8 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
+from tests.helpers import own_thread_sleep, own_thread_to_thread  # noqa: E402
+
 
 def _make_message(text="Hello", attachments=None, msg_name="spaces/S/messages/M"):
     """Build a minimal Chat API message dict for testing."""
@@ -350,7 +352,9 @@ async def test_search_messages_limits_parallel_space_fetches(mock_resolve, monke
         finally:
             state["current"] -= 1
 
-    monkeypatch.setattr("gchat.chat_tools.asyncio.to_thread", fake_to_thread)
+    monkeypatch.setattr(
+        "gchat.chat_tools.asyncio.to_thread", own_thread_to_thread(fake_to_thread)
+    )
 
     spaces = [{"name": f"spaces/S{i}", "displayName": f"Space {i}"} for i in range(5)]
 
@@ -390,8 +394,10 @@ async def test_search_messages_retries_ssl_per_space_without_restarting_search(
     async def fake_to_thread(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
-    monkeypatch.setattr("gchat.chat_tools.asyncio.to_thread", fake_to_thread)
-    monkeypatch.setattr("gchat.chat_tools.asyncio.sleep", AsyncMock())
+    monkeypatch.setattr(
+        "gchat.chat_tools.asyncio.to_thread", own_thread_to_thread(fake_to_thread)
+    )
+    monkeypatch.setattr("gchat.chat_tools.asyncio.sleep", own_thread_sleep())
 
     from gchat.chat_tools import search_messages
 
@@ -444,8 +450,10 @@ async def test_search_messages_raises_transient_error_when_all_spaces_ssl_fail(
     async def fake_to_thread(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
-    monkeypatch.setattr("gchat.chat_tools.asyncio.to_thread", fake_to_thread)
-    monkeypatch.setattr("gchat.chat_tools.asyncio.sleep", AsyncMock())
+    monkeypatch.setattr(
+        "gchat.chat_tools.asyncio.to_thread", own_thread_to_thread(fake_to_thread)
+    )
+    monkeypatch.setattr("gchat.chat_tools.asyncio.sleep", own_thread_sleep())
 
     from core.utils import TransientNetworkError
     from gchat.chat_tools import search_messages

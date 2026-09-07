@@ -17,6 +17,7 @@ from googleapiclient.errors import HttpError
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
+from tests.helpers import own_thread_sleep as _own_thread_sleep  # noqa: E402
 from gmail.gmail_helpers import _is_retryable_error
 from gmail.gmail_tools import (
     _fetch_message_with_retry,
@@ -260,12 +261,9 @@ async def test_message_retry_uses_three_backoffs(monkeypatch):
         request.execute.side_effect = execute
         return request
 
-    async def record_sleep(delay):
-        sleeps.append(delay)
-
     service = Mock()
     service.users().messages().get.side_effect = message_get
-    monkeypatch.setattr("asyncio.sleep", record_sleep)
+    monkeypatch.setattr("asyncio.sleep", _own_thread_sleep(record=sleeps))
 
     _, message, error = await _fetch_message_with_retry(
         service,
@@ -296,15 +294,12 @@ async def test_message_batch_failure_does_not_restart_exhausted_retries(monkeypa
         request.execute.side_effect = execute
         return request
 
-    async def no_sleep(_delay):
-        return None
-
     batch = Mock()
     batch.execute.side_effect = RuntimeError("batch transport failed")
     service = Mock()
     service.users().messages().get.side_effect = message_get
     service.new_batch_http_request.return_value = batch
-    monkeypatch.setattr("asyncio.sleep", no_sleep)
+    monkeypatch.setattr("asyncio.sleep", _own_thread_sleep())
 
     result = await _unwrap(get_gmail_messages_content_batch)(
         service=service,
@@ -332,15 +327,12 @@ async def test_thread_batch_failure_does_not_restart_exhausted_retries(monkeypat
         request.execute.side_effect = execute
         return request
 
-    async def no_sleep(_delay):
-        return None
-
     batch = Mock()
     batch.execute.side_effect = RuntimeError("batch transport failed")
     service = Mock()
     service.users().threads().get.side_effect = thread_get
     service.new_batch_http_request.return_value = batch
-    monkeypatch.setattr("asyncio.sleep", no_sleep)
+    monkeypatch.setattr("asyncio.sleep", _own_thread_sleep())
 
     result = await _unwrap(get_gmail_threads_content_batch)(
         service=service,

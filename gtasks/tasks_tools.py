@@ -18,7 +18,17 @@ from mcp.types import ToolAnnotations
 
 from auth.service_decorator import require_google_service
 from core.server import server
-from core.utils import UserInputError, handle_http_errors
+from core.api_enablement import (
+    get_activation_url,
+    get_api_enablement_message,
+    is_service_disabled_error,
+)
+from core.utils import (
+    UserInputError,
+    as_single_line,
+    handle_http_errors,
+    sanitize_display_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +42,31 @@ def _format_reauth_message(error: Exception, user_google_email: str) -> str:
 
     # Only suggest re-authentication for auth-related errors (401, 403)
     if isinstance(error, HttpError) and error.resp.status in (401, 403):
+        # A 403 caused by the Tasks API being switched off in the Cloud project
+        # is a configuration problem, not an authentication one. Re-authenticating
+        # cannot enable an API, so never advise it here.
+        structured_details = getattr(error, "error_details", None)
+        if error.resp.status == 403 and is_service_disabled_error(
+            str(error), structured_details
+        ):
+            enablement_msg = get_api_enablement_message(
+                str(error), "tasks", structured_details
+            )
+            if enablement_msg:
+                return f"{base}\n\n{enablement_msg}"
+
+            activation_url = get_activation_url(structured_details)
+            link_hint = (
+                f"Enable it here: {activation_url}"
+                if activation_url
+                else "Please check the Google Cloud Console to enable it."
+            )
+            return (
+                f"{base}. The Google Tasks API is not enabled for your project. "
+                f"{link_hint} This is NOT an authentication problem - "
+                f"re-authenticating will not fix it, so do not call 'start_google_auth'."
+            )
+
         base += ". You might need to re-authenticate."
         if is_oauth21_enabled():
             if is_external_oauth21_provider():
@@ -160,7 +195,10 @@ async def list_task_lists(
 
         response = f"Task Lists for {user_google_email}:\n"
         for task_list in task_lists:
-            response += f"- {task_list['title']} (ID: {task_list['id']})\n"
+            response += as_single_line(
+                f"- {task_list['title']} (ID: {task_list['id']})"
+            )
+            response += "\n"
             response += f"  Updated: {task_list.get('updated', 'N/A')}\n"
 
         if next_page_token:
@@ -212,11 +250,17 @@ async def get_task_list(
             service.tasklists().get(tasklist=task_list_id).execute
         )
 
-        response = f"""Task List Details for {user_google_email}:
-- Title: {task_list["title"]}
-- ID: {task_list["id"]}
-- Updated: {task_list.get("updated", "N/A")}
-- Self Link: {task_list.get("selfLink", "N/A")}"""
+        title = sanitize_display_text(task_list["title"])
+        response = "\n".join(
+            as_single_line(line)
+            for line in (
+                f"Task List Details for {user_google_email}:",
+                f"- Title: {title}",
+                f"- ID: {task_list['id']}",
+                f"- Updated: {task_list.get('updated', 'N/A')}",
+                f"- Self Link: {task_list.get('selfLink', 'N/A')}",
+            )
+        )
 
         logger.info(f"Retrieved task list {task_list_id} for {user_google_email}")
         return response
@@ -246,11 +290,17 @@ async def _create_task_list_impl(
 
     result = await asyncio.to_thread(service.tasklists().insert(body=body).execute)
 
-    response = f"""Task List Created for {user_google_email}:
-- Title: {result["title"]}
-- ID: {result["id"]}
-- Created: {result.get("updated", "N/A")}
-- Self Link: {result.get("selfLink", "N/A")}"""
+    title = sanitize_display_text(result["title"])
+    response = "\n".join(
+        as_single_line(line)
+        for line in (
+            f"Task List Created for {user_google_email}:",
+            f"- Title: {title}",
+            f"- ID: {result['id']}",
+            f"- Created: {result.get('updated', 'N/A')}",
+            f"- Self Link: {result.get('selfLink', 'N/A')}",
+        )
+    )
 
     logger.info(f"Created task list with ID {result['id']} for {user_google_email}")
     return response
@@ -270,10 +320,16 @@ async def _update_task_list_impl(
         service.tasklists().update(tasklist=task_list_id, body=body).execute
     )
 
-    response = f"""Task List Updated for {user_google_email}:
-- Title: {result["title"]}
-- ID: {result["id"]}
-- Updated: {result.get("updated", "N/A")}"""
+    title = sanitize_display_text(result["title"])
+    response = "\n".join(
+        as_single_line(line)
+        for line in (
+            f"Task List Updated for {user_google_email}:",
+            f"- Title: {title}",
+            f"- ID: {result['id']}",
+            f"- Updated: {result.get('updated', 'N/A')}",
+        )
+    )
 
     logger.info(f"Updated task list {task_list_id} for {user_google_email}")
     return response
@@ -619,11 +675,16 @@ def serialize_tasks(structured_tasks: List[StructuredTask], subtask_level: int) 
             placeholder_parent_count += 1
         else:
             title = "Untitled"
-        response += f"{indent}{bullet} {title} (ID: {task.id})\n"
+        response += as_single_line(f"{indent}{bullet} {title} (ID: {task.id})")
+        response += "\n"
         response += f"{indent}  Status: {task.status or 'N/A'}\n"
         response += f"{indent}  Due: {task.due}\n" if task.due else ""
         if task.notes:
-            response += f"{indent}  Notes: {task.notes[:100]}{'...' if len(task.notes) > 100 else ''}\n"
+            response += as_single_line(
+                f"{indent}  Notes: {task.notes[:100]}"
+                f"{'...' if len(task.notes) > 100 else ''}"
+            )
+            response += "\n"
         response += f"{indent}  Completed: {task.completed}\n" if task.completed else ""
         response += f"{indent}  Updated: {task.updated or 'N/A'}\n"
         response += "\n"
@@ -677,18 +738,24 @@ async def get_task(
             service.tasks().get(tasklist=task_list_id, task=task_id).execute
         )
 
-        response = f"""Task Details for {user_google_email}:
-- Title: {task.get("title", "Untitled")}
-- ID: {task["id"]}
-- Status: {task.get("status", "N/A")}
-- Updated: {task.get("updated", "N/A")}"""
+        title = sanitize_display_text(task.get("title", "Untitled"))
+        response = "\n".join(
+            as_single_line(line)
+            for line in (
+                f"Task Details for {user_google_email}:",
+                f"- Title: {title}",
+                f"- ID: {task['id']}",
+                f"- Status: {task.get('status', 'N/A')}",
+                f"- Updated: {task.get('updated', 'N/A')}",
+            )
+        )
 
         if task.get("due"):
             response += f"\n- Due Date: {task['due']}"
         if task.get("completed"):
             response += f"\n- Completed: {task['completed']}"
         if task.get("notes"):
-            response += f"\n- Notes: {task['notes']}"
+            response += "\n" + as_single_line(f"- Notes: {task['notes']}")
         if task.get("parent"):
             response += f"\n- Parent Task ID: {task['parent']}"
         if task.get("position"):
@@ -743,16 +810,22 @@ async def _create_task_impl(
 
     result = await asyncio.to_thread(service.tasks().insert(**params).execute)
 
-    response = f"""Task Created for {user_google_email}:
-- Title: {result["title"]}
-- ID: {result["id"]}
-- Status: {result.get("status", "N/A")}
-- Updated: {result.get("updated", "N/A")}"""
+    title = sanitize_display_text(result["title"])
+    response = "\n".join(
+        as_single_line(line)
+        for line in (
+            f"Task Created for {user_google_email}:",
+            f"- Title: {title}",
+            f"- ID: {result['id']}",
+            f"- Status: {result.get('status', 'N/A')}",
+            f"- Updated: {result.get('updated', 'N/A')}",
+        )
+    )
 
     if result.get("due"):
         response += f"\n- Due Date: {result['due']}"
     if result.get("notes"):
-        response += f"\n- Notes: {result['notes']}"
+        response += "\n" + as_single_line(f"- Notes: {result['notes']}")
     if result.get("webViewLink"):
         response += f"\n- Web View Link: {result['webViewLink']}"
 
@@ -802,16 +875,22 @@ async def _update_task_impl(
         service.tasks().update(tasklist=task_list_id, task=task_id, body=body).execute
     )
 
-    response = f"""Task Updated for {user_google_email}:
-- Title: {result["title"]}
-- ID: {result["id"]}
-- Status: {result.get("status", "N/A")}
-- Updated: {result.get("updated", "N/A")}"""
+    title = sanitize_display_text(result["title"])
+    response = "\n".join(
+        as_single_line(line)
+        for line in (
+            f"Task Updated for {user_google_email}:",
+            f"- Title: {title}",
+            f"- ID: {result['id']}",
+            f"- Status: {result.get('status', 'N/A')}",
+            f"- Updated: {result.get('updated', 'N/A')}",
+        )
+    )
 
     if result.get("due"):
         response += f"\n- Due Date: {result['due']}"
     if result.get("notes"):
-        response += f"\n- Notes: {result['notes']}"
+        response += "\n" + as_single_line(f"- Notes: {result['notes']}")
     if result.get("completed"):
         response += f"\n- Completed: {result['completed']}"
 
@@ -861,11 +940,17 @@ async def _move_task_impl(
 
     result = await asyncio.to_thread(service.tasks().move(**params).execute)
 
-    response = f"""Task Moved for {user_google_email}:
-- Title: {result["title"]}
-- ID: {result["id"]}
-- Status: {result.get("status", "N/A")}
-- Updated: {result.get("updated", "N/A")}"""
+    title = sanitize_display_text(result["title"])
+    response = "\n".join(
+        as_single_line(line)
+        for line in (
+            f"Task Moved for {user_google_email}:",
+            f"- Title: {title}",
+            f"- ID: {result['id']}",
+            f"- Status: {result.get('status', 'N/A')}",
+            f"- Updated: {result.get('updated', 'N/A')}",
+        )
+    )
 
     if result.get("parent"):
         response += f"\n- Parent Task ID: {result['parent']}"
