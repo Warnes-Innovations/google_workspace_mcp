@@ -146,7 +146,16 @@ exclude = ["tests*", "docs*", "build", "dist"]
 
 [tool.pytest.ini_options]
 addopts = "--ignore=tests/gappsscript/manual_test.py"
-norecursedirs = ["tmp", ".venv", "worktrees"]
+# pytest's norecursedirs is REPLACED by this setting, not extended, so the
+# tool defaults must be restated or they are silently lost. Omitting them
+# re-opened collection of build/, dist/, node_modules/ and every dot-dir --
+# the exact hazard this setting was added to close, moved one directory over.
+norecursedirs = [
+    # pytest defaults, restated
+    "*.egg", ".*", "_darcs", "build", "CVS", "dist", "node_modules", "venv", "{arch}",
+    # ours
+    "tmp", "worktrees",
+]
 pythonpath = ["."]
 markers = [
     "integration: marks tests as requiring real external services (deselect with '-m \"not integration\"')",
