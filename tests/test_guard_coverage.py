@@ -53,6 +53,7 @@ PACKAGES = (
     "gchat",
     "gcontacts",
     "gdocs",
+    "gdrive",
     "gforms",
     "gmail",
     "gsearch",
@@ -342,6 +343,22 @@ GOLDEN_CENSUS = {
     },
     "gdocs/docs_tools.py::list_docs_in_folder": {"as_single_line": 1},
     "gdocs/docs_tools.py::search_docs": {"as_single_line": 1},
+    "gdrive/drive_helpers.py::_format_drive_file_line": {
+        "as_single_line": 2,
+        "sanitize_display_text": 3,
+    },
+    "gdrive/drive_helpers.py::format_permission_info": {
+        "as_single_line": 2,
+        "sanitize_display_text": 4,
+    },
+    "gdrive/drive_tools.py::_list_shared_drives_impl": {
+        "as_single_line": 2,
+        "sanitize_display_text": 3,
+    },
+    "gdrive/drive_tools.py::get_drive_file_permissions": {
+        "as_single_line": 10,
+        "sanitize_display_text": 5,
+    },
     "gforms/forms_tools.py::get_form": {
         "as_single_line": 2,
         "sanitize_display_text": 3,

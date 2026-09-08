@@ -27,7 +27,12 @@ from core.http_utils import (
     redact_url as _redact_url,
     ssrf_safe_stream as _ssrf_safe_stream,
 )
-from core.utils import UserInputError, validate_file_path
+from core.utils import (
+    UserInputError,
+    as_single_line,
+    sanitize_display_text,
+    validate_file_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -208,16 +213,16 @@ def format_permission_info(permission: Dict[str, Any]) -> str:
     if perm_type == "anyone":
         base = f"Anyone with the link ({role}) [id: {perm_id}]"
     elif perm_type == "user":
-        email = _sanitize_drive_text(permission.get("emailAddress", "unknown"))
+        email = sanitize_display_text(permission.get("emailAddress", "unknown"))
         base = f"User: {email} ({role}) [id: {perm_id}]"
     elif perm_type == "group":
-        email = _sanitize_drive_text(permission.get("emailAddress", "unknown"))
+        email = sanitize_display_text(permission.get("emailAddress", "unknown"))
         base = f"Group: {email} ({role}) [id: {perm_id}]"
     elif perm_type == "domain":
-        domain = _sanitize_drive_text(permission.get("domain", "unknown"))
+        domain = sanitize_display_text(permission.get("domain", "unknown"))
         base = f"Domain: {domain} ({role}) [id: {perm_id}]"
     else:
-        base = f"{_sanitize_drive_text(perm_type)} ({role}) [id: {perm_id}]"
+        base = f"{sanitize_display_text(perm_type)} ({role}) [id: {perm_id}]"
 
     extras = []
     if permission.get("expirationTime"):
@@ -230,9 +235,12 @@ def format_permission_info(permission: Dict[str, Any]) -> str:
                 extras.append(f"inherited from: {detail['inheritedFrom']}")
                 break
 
+    # Guard the ASSEMBLED line, not just the fields flattened above. `extras`
+    # carries expirationTime and inheritedFrom straight from the API, and this
+    # string is rendered into a newline-joined permissions block.
     if extras:
-        return f"{base} | {', '.join(extras)}"
-    return base
+        return as_single_line(f"{base} | {', '.join(extras)}")
+    return as_single_line(base)
 
 
 # Matches an explicit trashed clause anywhere in a Drive query, e.g. "trashed = true".
@@ -1100,54 +1108,12 @@ async def _resolve_import_media(
     return media, source_mime_type, remote_file_data
 
 
-# Every character str.splitlines() treats as a line break. Enumerated rather
-# than derived from `ch < " "`, because NEL, LINE SEPARATOR and PARAGRAPH
-# SEPARATOR are all ABOVE U+0020 and silently defeated an earlier version of
-# this guard — it claimed "one record stays one line" while three characters
-# broke the line anyway.
-_LINE_BREAK_CHARS = "\n\r\v\f\x1c\x1d\x1e\x85  "
-
-
-def _sanitize_drive_text(value: Any) -> str:
-    """Flatten Drive-supplied text so it cannot forge result-list structure.
-
-    Anyone who can share a file, a drive, or a comment into the user's Drive
-    chooses the display text that comes back with it. Rendered verbatim into a
-    newline-joined result list, a value containing a line break forges extra
-    `- Name: ...` rows and a fake `nextPageToken:` line, smuggling instructions
-    into agent context. That was demonstrated against this formatter.
-
-    Every line-break and control character becomes a space, so one record
-    cannot become two.
-
-    What this does NOT do, deliberately, so callers don't over-trust it:
-      * It is not an escape. There is no grammar for this output format and
-        nothing parses it, so escaping quotes would buy a visual cue and
-        nothing more — while mangling every legitimate name containing a quote
-        or a backslash. Removed for that reason.
-      * It does not make the text safe. Prompt injection is prose: "ignore
-        previous instructions" needs no special character and passes straight
-        through. Treat all of this content as untrusted input to the model.
-
-    Its one guarantee is structural: the result cannot contain a line break.
-    """
-    text = "" if value is None else str(value)
-    return "".join(
-        " " if (ch < " " or ch == "\x7f" or ch in _LINE_BREAK_CHARS) else ch
-        for ch in text
-    )
-
-
-def _as_single_line(line: str) -> str:
-    """Enforce one-record-one-line on an ASSEMBLED result line.
-
-    Applied to the finished string rather than to a hand-picked list of fields.
-    A per-field guard is only as good as its field list, and two independent
-    reviews demonstrated forgery through fields that list omitted (mimeType,
-    and the shared-drive name). Enforcing at the line boundary makes the
-    invariant hold for every field, including ones added later.
-    """
-    return _sanitize_drive_text(line)
+# The line-break guards live in core/utils.py, shared across every package.
+# gdrive previously carried a private twin (sanitize_display_text /
+# as_single_line) with its own _LINE_BREAK_CHARS. It was deleted rather than
+# aliased: the census in tests/test_guard_coverage.py matches guard calls BY
+# NAME, so an alias would have kept every gdrive call site invisible to it --
+# preserving the duplication's real cost while appearing to remove it.
 
 
 def _format_drive_file_line(
@@ -1174,9 +1140,9 @@ def _format_drive_file_line(
     Returns:
         str: A single formatted result line (no trailing newline).
     """
-    name = _sanitize_drive_text(item["name"])
+    name = sanitize_display_text(item["name"])
     if not detailed:
-        return _as_single_line(
+        return as_single_line(
             f'- Name: "{name}" (ID: {item["id"]}, Type: {item["mimeType"]})'
         )
 
@@ -1186,8 +1152,8 @@ def _format_drive_file_line(
     # Last modifying user (not available for all files)
     lmu = item.get("lastModifyingUser")
     if lmu:
-        lmu_name = _sanitize_drive_text(lmu.get("displayName", ""))
-        lmu_email = _sanitize_drive_text(lmu.get("emailAddress", ""))
+        lmu_name = sanitize_display_text(lmu.get("displayName", ""))
+        lmu_email = sanitize_display_text(lmu.get("emailAddress", ""))
         if lmu_name and lmu_email:
             last_edited_by_str = f", Last Edited By: {lmu_name} <{lmu_email}>"
         elif lmu_name:
@@ -1217,7 +1183,7 @@ def _format_drive_file_line(
     # owns the file.  True creator attribution requires fetching revision 1
     # via files/{id}/revisions and reading its lastModifyingUser.  That adds
     # one API call per file and should be a separate follow-up.
-    return _as_single_line(
+    return as_single_line(
         f'- Name: "{name}" (ID: {item["id"]}, Type: {item["mimeType"]}{size_str}'
         f"{created_str}, Modified: {item.get('modifiedTime', 'N/A')}"
         f"{last_edited_by_str}{anyone_role_str}{drive_id_str})"

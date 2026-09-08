@@ -26,6 +26,8 @@ from auth.oauth_config import is_stateless_mode
 from core.attachment_storage import get_attachment_storage, get_attachment_url
 from core.utils import (
     GOOGLE_API_WRITE_RETRIES,
+    as_single_line,
+    sanitize_display_text,
     IMAGE_MIME_TYPES,
     encode_image_content,
     OfficeXmlExtractionError,
@@ -38,9 +40,7 @@ from core.utils import (
 from core.server import server
 from core.config import get_transport_mode
 from gdrive.drive_helpers import (
-    _as_single_line,
     _format_drive_file_line,
-    _sanitize_drive_text,
     DRIVE_QUERY_PATTERNS,
     FOLDER_MIME_TYPE,
     GOOGLE_APPS_MIME_PREFIX,
@@ -1005,8 +1005,8 @@ async def _list_shared_drives_impl(
         rest_flags = ", ".join(k for k, v in rest.items() if v) or "none"
         hidden = " [hidden]" if d.get("hidden") else ""
         parts.append(
-            _as_single_line(
-                f'- Name: "{_sanitize_drive_text(d["name"])}" (ID: {d["id"]}, '
+            as_single_line(
+                f'- Name: "{sanitize_display_text(d["name"])}" (ID: {d["id"]}, '
                 f"Created: {d.get('createdTime', 'N/A')}){hidden} "
                 f"Capabilities: {cap_flags}; Restrictions: {rest_flags}"
             )
@@ -1021,7 +1021,7 @@ async def _list_shared_drives_impl(
                     parts.append("  Organizers: <none returned>")
                 else:
                     for o in organizers:
-                        identifier = _sanitize_drive_text(
+                        identifier = sanitize_display_text(
                             o.get("emailAddress")
                             or o.get("domain")
                             or o.get("displayName")
@@ -1032,7 +1032,7 @@ async def _list_shared_drives_impl(
                         # Compare SANITIZED against SANITIZED — comparing the raw
                         # display name to the normalized identifier made the
                         # values always differ, printing the name twice.
-                        display = _sanitize_drive_text(o.get("displayName"))
+                        display = sanitize_display_text(o.get("displayName"))
                         kind = o.get("type", "?")
                         suffix = (
                             f' ("{display}")'
@@ -1040,7 +1040,7 @@ async def _list_shared_drives_impl(
                             else ""
                         )
                         parts.append(
-                            _as_single_line(
+                            as_single_line(
                                 f"  Organizer ({kind}): {identifier}{suffix}"
                             )
                         )
@@ -1841,11 +1841,11 @@ async def get_drive_file_permissions(
             # same untrusted-text class as _format_drive_file_line.
             owner_str = ", ".join(
                 (
-                    f"{_sanitize_drive_text(owner.get('displayName') or owner.get('name') or 'Unknown')} "
-                    f"({_sanitize_drive_text(owner.get('emailAddress') or owner.get('email'))})"
+                    f"{sanitize_display_text(owner.get('displayName') or owner.get('name') or 'Unknown')} "
+                    f"({sanitize_display_text(owner.get('emailAddress') or owner.get('email'))})"
                 )
                 if (owner.get("emailAddress") or owner.get("email"))
-                else _sanitize_drive_text(
+                else sanitize_display_text(
                     owner.get("displayName") or owner.get("name") or "Unknown"
                 )
                 for owner in owners
@@ -1853,20 +1853,28 @@ async def get_drive_file_permissions(
         else:
             owner_str = "None available"
 
+        # Every row goes through as_single_line, not just the ones carrying an
+        # obviously untrusted field. The file NAME is chosen by whoever shared
+        # the file, and this block is newline-joined, so one break forges rows
+        # in a report whose entire purpose is to state sharing state. Guarding
+        # the assembled line rather than a chosen subset of fields is the point:
+        # a per-field list is only ever as good as the list.
         output_parts = [
-            f"File: {file_metadata.get('name', 'Unknown')}",
-            f"ID: {file_id}",
-            f"Type: {file_metadata.get('mimeType', 'Unknown')}",
-            f"Parents: {parent_str}",
-            f"Owners: {owner_str}",
-            f"Size: {file_metadata.get('size', 'N/A')} bytes",
-            f"Created: {file_metadata.get('createdTime', 'N/A')}",
-            f"Modified: {file_metadata.get('modifiedTime', 'N/A')}",
-            f"Trashed: {file_metadata.get('trashed', False)}",
+            as_single_line(f"File: {file_metadata.get('name', 'Unknown')}"),
+            as_single_line(f"ID: {file_id}"),
+            as_single_line(f"Type: {file_metadata.get('mimeType', 'Unknown')}"),
+            as_single_line(f"Parents: {parent_str}"),
+            as_single_line(f"Owners: {owner_str}"),
+            as_single_line(f"Size: {file_metadata.get('size', 'N/A')} bytes"),
+            as_single_line(f"Created: {file_metadata.get('createdTime', 'N/A')}"),
+            as_single_line(f"Modified: {file_metadata.get('modifiedTime', 'N/A')}"),
+            as_single_line(f"Trashed: {file_metadata.get('trashed', False)}"),
         ]
 
         if file_metadata.get("driveId"):
-            output_parts.append(f"Shared Drive ID: {file_metadata['driveId']}")
+            output_parts.append(
+                as_single_line(f"Shared Drive ID: {file_metadata['driveId']}")
+            )
 
         output_parts.extend(
             [
@@ -1880,8 +1888,8 @@ async def get_drive_file_permissions(
         sharing_user = file_metadata.get("sharingUser")
         if sharing_user:
             output_parts.append(
-                f"  Shared by: {_sanitize_drive_text(sharing_user.get('displayName', 'Unknown'))} "
-                f"({_sanitize_drive_text(sharing_user.get('emailAddress', 'Unknown'))})"
+                f"  Shared by: {sanitize_display_text(sharing_user.get('displayName', 'Unknown'))} "
+                f"({sanitize_display_text(sharing_user.get('emailAddress', 'Unknown'))})"
             )
 
         # Process permissions (already resolved above as _perms_for_shared)
