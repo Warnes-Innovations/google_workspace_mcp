@@ -47,6 +47,20 @@ _OFFICE_RELATIONSHIP_BASES = {
     "https://schemas.openxmlformats.org/officeDocument/2006/relationships",
     "http://purl.oclc.org/ooxml/officeDocument/relationships",
 }
+# The MIME types this extractor understands. Anything else is not an Office
+# document, so its bytes failing to open as a ZIP says nothing about damage.
+#
+# Do not remove this set and let every payload reach the ZIP open below: callers
+# distinguish "raised" from "returned None" to pick a branch, and their fallback
+# decoding lives in the branch an exception skips. Raising for a readable .txt
+# therefore does not merely mislabel it — it discards the content.
+_OFFICE_XML_MIME_TYPES = frozenset(
+    {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    }
+)
 _WORD_TEXT_RELATIONSHIP_KINDS = {"header", "footer", "footnotes", "endnotes"}
 _WORD_TEXT_RELATIONSHIP_TYPES = {
     f"{base}/{kind}": kind
@@ -560,6 +574,13 @@ def extract_office_xml_text(file_bytes: bytes, mime_type: str) -> Optional[str]:
             a caller, and conflating them reports a corrupt document as an
             unsupported or empty one.
     """
+    # Only a file that CLAIMS to be an Office document can be a damaged one.
+    # For any other MIME type, returning None hands the caller back to its own
+    # decoding, which is what read a .txt or .csv correctly before this
+    # extractor learned to raise.
+    if mime_type not in _OFFICE_XML_MIME_TYPES:
+        return None
+
     shared_strings: List[str] = []
     ns_excel_main = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 
