@@ -63,7 +63,7 @@ async def test_read_comments_includes_quoted_text():
     assert "Quoted text: the specific text that was highlighted" in result
     assert "Needs a citation here." in result
 
-    parts = result.split("\\n")
+    parts = result.splitlines()
     bob_section_started = False
     for part in parts:
         if "Author: Bob" in part:
