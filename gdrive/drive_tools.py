@@ -191,6 +191,7 @@ async def search_drive_files(
     detailed: bool = True,
     order_by: Optional[str] = None,
     include_trashed: bool = False,
+    include_sharing: bool = False,
 ) -> str:
     """
     Searches for files and folders within a user's Google Drive, including shared drives.
@@ -216,7 +217,9 @@ async def search_drive_files(
                                    'presentation'/'slides', 'form', 'drawing', 'pdf', 'shortcut',
                                    'script', 'site', 'jam'/'jamboard') or any raw MIME type
                                    string (e.g. 'application/pdf'). Defaults to None (all types).
-        detailed (bool): Whether to include size, modified time, and link in results. Defaults to True.
+        detailed (bool): Whether to include size, creation/modification times, last
+                         editor, and link in results. Defaults to True. This controls
+                         VERBOSITY only — it does not affect what the tool can see.
         order_by (Optional[str]): Sort order. Comma-separated list of sort keys with optional 'desc' modifier.
                                   Valid keys: 'createdTime', 'folder', 'modifiedByMeTime', 'modifiedTime',
                                   'name', 'name_natural', 'quotaBytesUsed', 'recency', 'sharedWithMeTime',
@@ -225,6 +228,16 @@ async def search_drive_files(
         include_trashed (bool): Whether to include files in the trash. Defaults to False, matching
                                 the Drive web UI and `list_drive_items`. Ignored when `query` already
                                 contains its own `trashed` clause (`=` or `!=`), which always wins.
+        include_sharing (bool): Whether to fetch each file's ACLs and annotate publicly
+                                shared files with "Anyone with link: <role>". Defaults to
+                                False — this is a PRIVILEGE switch, not a verbosity one,
+                                so it is opt-in and separate from `detailed`.
+                                Prefer `get_drive_file_permissions` or
+                                `check_drive_file_public_access` when sharing state is the
+                                actual question; those report it fully rather than only
+                                flagging the "anyone" case, and an absent annotation here
+                                is not evidence a file is unshared (Drive omits the
+                                permissions field entirely for Shared Drive items).
 
     Returns:
         str: A formatted list of found files/folders with their details (ID, name, type, and optionally size, modified time, link).
@@ -287,7 +300,13 @@ async def search_drive_files(
         corpora=corpora,
         page_token=page_token,
         detailed=detailed,
-        include_permissions=detailed,
+        # ACLs ride on include_sharing, NOT on detailed. `detailed` is a verbosity
+        # flag; fetching permissions is a privilege decision, and tying the two made
+        # this core-tier tool answer by default the question that
+        # get_drive_file_permissions and check_drive_file_public_access are gated to
+        # the `complete` tier for. A parameter named for how much it prints must not
+        # decide how much it can see.
+        include_permissions=include_sharing,
         order_by=order_by,
     )
 

@@ -1134,6 +1134,7 @@ async def test_search_detailed_shows_anyone_permission_role():
         user_google_email="user@example.com",
         query="public",
         detailed=True,
+        include_sharing=True,
     )
 
     assert "Anyone with link: writer" in result
@@ -1222,7 +1223,89 @@ async def test_search_detailed_true_requests_extra_api_fields():
     assert "size" in call_kwargs["fields"]
     assert "createdTime" in call_kwargs["fields"]
     assert "lastModifyingUser" in call_kwargs["fields"]
-    assert "permissions" in call_kwargs["fields"]
+    # `detailed` is verbosity, not privilege: it must NOT pull ACLs. Fetching
+    # permissions here made a core-tier tool answer by default the question that
+    # get_drive_file_permissions and check_drive_file_public_access are gated to
+    # the `complete` tier for.
+    assert "permissions" not in call_kwargs["fields"]
+
+
+@pytest.mark.asyncio
+async def test_search_include_sharing_requests_permissions():
+    """ACLs are fetched only when include_sharing is asked for explicitly."""
+    mock_service = Mock()
+    mock_service.files().list().execute.return_value = {"files": []}
+
+    await _unwrap(search_drive_files)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        query="anything",
+        detailed=True,
+        include_sharing=True,
+    )
+
+    assert (
+        "permissions" in mock_service.files.return_value.list.call_args.kwargs["fields"]
+    )
+
+
+@pytest.mark.asyncio
+def _fields_aware_service(file_kwargs):
+    """A Drive mock that honours the `fields` mask, as the real API does.
+
+    The plain mocks elsewhere return `permissions` whatever was asked for, so a
+    test written against them cannot distinguish "we did not fetch ACLs" from
+    "we fetched them and rendered them" — the formatter sees the field either
+    way. That is exactly the distinction this change is about, so the fixture
+    has to model the masking rather than assume it.
+    """
+    service = Mock()
+
+    def _list(**kwargs):
+        requested = kwargs.get("fields", "")
+        item = _make_file(**file_kwargs)
+        if "permissions" not in requested:
+            item.pop("permissions", None)
+        result = Mock()
+        result.execute.return_value = {"files": [item]}
+        return result
+
+    service.files.return_value.list.side_effect = _list
+    return service
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "include_sharing,expect_annotation", [(False, False), (True, True)]
+)
+async def test_search_annotates_sharing_only_when_asked(
+    include_sharing, expect_annotation
+):
+    """End-to-end, against a fixture that masks fields the way Drive does.
+
+    Both rows matter: the False row is the guarantee, and the True row is the
+    control proving the fixture can still produce the annotation — without it,
+    the False row would pass against a mock that had simply stopped working.
+    """
+    file_kwargs = dict(
+        file_id="f1",
+        name="Public Doc",
+        mime_type="application/vnd.google-apps.document",
+        permissions=[{"id": "anyoneWithLink", "type": "anyone", "role": "writer"}],
+    )
+    service = _fields_aware_service(file_kwargs)
+
+    result = await _unwrap(search_drive_files)(
+        service=service,
+        user_google_email="user@example.com",
+        query="public",
+        detailed=True,
+        include_sharing=include_sharing,
+    )
+
+    requested = service.files.return_value.list.call_args.kwargs["fields"]
+    assert ("permissions" in requested) is include_sharing
+    assert ("Anyone with link" in result) is expect_annotation
 
 
 @pytest.mark.asyncio
