@@ -18,7 +18,7 @@ import zipfile
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-from core.utils import UserInputError
+from core.utils import UserInputError, sanitize_display_text
 
 from gdrive.drive_helpers import (
     RECENCY_ORDER_BY_MAP,
@@ -29,7 +29,6 @@ from gdrive.drive_helpers import (
 )
 from gdrive.drive_tools import (
     _format_drive_file_line,
-    _sanitize_drive_text,
     create_drive_file,
     get_drive_file_permissions,
     import_to_google_doc,
@@ -3612,7 +3611,7 @@ def test_sanitize_drive_text_flattens_every_line_terminator(label, ch):
     docstring claimed one record stays one line. Three of these were
     demonstrated to forge a second row through the sanitizer.
     """
-    out = _sanitize_drive_text(f"A{ch}B")
+    out = sanitize_display_text(f"A{ch}B")
     assert ch not in out
     assert len(out.splitlines()) == 1
 
@@ -3624,11 +3623,11 @@ def test_sanitize_drive_text_preserves_ordinary_names():
     output format, so it was a visual cue at the cost of every Windows path and
     every quoted title.
     """
-    assert _sanitize_drive_text("Ordinary Name.pdf") == "Ordinary Name.pdf"
-    assert _sanitize_drive_text('Q3 "final".pdf') == 'Q3 "final".pdf'
-    assert _sanitize_drive_text("C:\\temp\\report.docx") == "C:\\temp\\report.docx"
-    assert _sanitize_drive_text(None) == ""
-    assert _sanitize_drive_text("a\tb") == "a b"
+    assert sanitize_display_text("Ordinary Name.pdf") == "Ordinary Name.pdf"
+    assert sanitize_display_text('Q3 "final".pdf') == 'Q3 "final".pdf'
+    assert sanitize_display_text("C:\\temp\\report.docx") == "C:\\temp\\report.docx"
+    assert sanitize_display_text(None) == ""
+    assert sanitize_display_text("a\tb") == "a b"
 
 
 @pytest.mark.parametrize(
