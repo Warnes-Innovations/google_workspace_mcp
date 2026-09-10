@@ -1112,22 +1112,46 @@ async def test_search_detailed_shows_last_modifying_user():
     assert "Last Edited By: Alice Smith <alice@example.com>" in result
 
 
+def _fields_aware_service(file_kwargs):
+    """A Drive mock that honours the `fields` mask, as the real API does.
+
+    The plain mocks elsewhere return `permissions` whatever was asked for, so a
+    test written against them cannot distinguish "we did not fetch ACLs" from
+    "we fetched them and rendered them" — the formatter sees the field either
+    way. That is exactly the distinction this change is about, so the fixture
+    has to model the masking rather than assume it.
+    """
+    service = Mock()
+
+    def _list(**kwargs):
+        requested = kwargs.get("fields", "")
+        item = _make_file(**file_kwargs)
+        if "permissions" not in requested:
+            item.pop("permissions", None)
+        result = Mock()
+        result.execute.return_value = {"files": [item]}
+        return result
+
+    service.files.return_value.list.side_effect = _list
+    return service
+
+
 @pytest.mark.asyncio
 async def test_search_detailed_shows_anyone_permission_role():
-    """detailed=True shows the role on an anyone-with-link permission."""
-    mock_service = Mock()
-    mock_service.files().list().execute.return_value = {
-        "files": [
-            _make_file(
-                "f1",
-                "Public Doc",
-                "application/vnd.google-apps.document",
-                permissions=[
-                    {"id": "anyoneWithLink", "type": "anyone", "role": "writer"},
-                ],
-            )
-        ]
-    }
+    """include_sharing=True shows the role on an anyone-with-link permission.
+
+    Uses the fields-aware service so the ACLs must actually be REQUESTED to
+    reach the formatter. With a plain mock this assertion held even when the
+    fetch was removed, because the mock returned `permissions` regardless.
+    """
+    mock_service = _fields_aware_service(
+        dict(
+            file_id="f1",
+            name="Public Doc",
+            mime_type="application/vnd.google-apps.document",
+            permissions=[{"id": "anyoneWithLink", "type": "anyone", "role": "writer"}],
+        )
+    )
 
     result = await _unwrap(search_drive_files)(
         service=mock_service,
@@ -1142,58 +1166,58 @@ async def test_search_detailed_shows_anyone_permission_role():
 
 @pytest.mark.asyncio
 async def test_search_detailed_no_anyone_permission():
-    """When no anyone permission exists, the anyone-with-link field is absent."""
-    mock_service = Mock()
-    mock_service.files().list().execute.return_value = {
-        "files": [
-            _make_file(
-                "f1",
-                "Private Doc",
-                "application/vnd.google-apps.document",
-                permissions=[
-                    {"id": "user123", "type": "user", "role": "writer"},
-                ],
-            )
-        ]
-    }
+    """ACLs fetched, but no `anyone` grant: the annotation is correctly absent.
+
+    Distinct from test_search_annotates_sharing_only_when_asked, which covers
+    "ACLs never fetched". This is the case where they WERE fetched and the file
+    genuinely is not publicly shared — so include_sharing is on deliberately.
+    """
+    mock_service = _fields_aware_service(
+        dict(
+            file_id="f1",
+            name="Private Doc",
+            mime_type="application/vnd.google-apps.document",
+            permissions=[{"id": "user123", "type": "user", "role": "writer"}],
+        )
+    )
 
     result = await _unwrap(search_drive_files)(
         service=mock_service,
         user_google_email="user@example.com",
         query="private",
         detailed=True,
+        include_sharing=True,
     )
 
+    assert (
+        "permissions" in mock_service.files.return_value.list.call_args.kwargs["fields"]
+    )
     assert "Anyone with link" not in result
 
 
 @pytest.mark.asyncio
 async def test_search_detailed_all_new_fields_together():
     """All new metadata fields appear together in output."""
-    mock_service = Mock()
-    mock_service.files().list().execute.return_value = {
-        "files": [
-            _make_file(
-                "f1",
-                "Full Doc",
-                "application/vnd.google-apps.document",
-                created="2024-03-01T10:00:00Z",
-                last_modifying_user={
-                    "displayName": "Bob",
-                    "emailAddress": "bob@example.com",
-                },
-                permissions=[
-                    {"id": "anyoneWithLink", "type": "anyone", "role": "reader"},
-                ],
-            )
-        ]
-    }
+    mock_service = _fields_aware_service(
+        dict(
+            file_id="f1",
+            name="Full Doc",
+            mime_type="application/vnd.google-apps.document",
+            created="2024-03-01T10:00:00Z",
+            last_modifying_user={
+                "displayName": "Bob",
+                "emailAddress": "bob@example.com",
+            },
+            permissions=[{"id": "anyoneWithLink", "type": "anyone", "role": "reader"}],
+        )
+    )
 
     result = await _unwrap(search_drive_files)(
         service=mock_service,
         user_google_email="user@example.com",
         query="full",
         detailed=True,
+        include_sharing=True,
     )
 
     assert "Created: 2024-03-01T10:00:00Z" in result
@@ -1247,31 +1271,6 @@ async def test_search_include_sharing_requests_permissions():
     assert (
         "permissions" in mock_service.files.return_value.list.call_args.kwargs["fields"]
     )
-
-
-@pytest.mark.asyncio
-def _fields_aware_service(file_kwargs):
-    """A Drive mock that honours the `fields` mask, as the real API does.
-
-    The plain mocks elsewhere return `permissions` whatever was asked for, so a
-    test written against them cannot distinguish "we did not fetch ACLs" from
-    "we fetched them and rendered them" — the formatter sees the field either
-    way. That is exactly the distinction this change is about, so the fixture
-    has to model the masking rather than assume it.
-    """
-    service = Mock()
-
-    def _list(**kwargs):
-        requested = kwargs.get("fields", "")
-        item = _make_file(**file_kwargs)
-        if "permissions" not in requested:
-            item.pop("permissions", None)
-        result = Mock()
-        result.execute.return_value = {"files": [item]}
-        return result
-
-    service.files.return_value.list.side_effect = _list
-    return service
 
 
 @pytest.mark.asyncio
