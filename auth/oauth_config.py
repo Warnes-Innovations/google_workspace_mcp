@@ -455,6 +455,39 @@ class OAuthConfig:
         """
         return bool(self.client_id)
 
+    def missing_default_client_remedy(self) -> str:
+        """Explain how to fix `is_configured() is False`, for THIS configuration.
+
+        The two causes need opposite advice, and telling an operator to set
+        GOOGLE_OAUTH_CLIENT_ID is a guaranteed no-op in one of them:
+        ``load_registry_from_env`` returns at the first source it finds, so
+        GOOGLE_OAUTH_CLIENTS_FILE / GOOGLE_OAUTH_CLIENTS take precedence and the
+        legacy variables are never read. An operator following that advice sees
+        no change and has no way to find out why.
+
+        Kept here rather than at the call sites because there are two of them
+        (core/server.py and main.py) and they had already drifted from the
+        equivalent message in auth.google_auth.check_client_secrets -- a fix to
+        that one did not reach these, which is what put this defect in the
+        review in the first place.
+        """
+        registry = self.client_registry
+        if registry is None or len(registry) == 0:
+            return (
+                "No OAuth client is configured. Set GOOGLE_OAUTH_CLIENT_ID and "
+                "GOOGLE_OAUTH_CLIENT_SECRET for a single-client deployment, or "
+                "point GOOGLE_OAUTH_CLIENTS_FILE at a client registry."
+            )
+        return (
+            f"An OAuth client registry is configured ({', '.join(registry.keys)}), "
+            "but it declares no 'default'. OAuth 2.1 binds FastMCP's Google "
+            "provider to a single client, so a default is required. Add a "
+            '"default" naming one of those clients, or run one deployment per '
+            "client. Setting GOOGLE_OAUTH_CLIENT_ID will NOT take effect: the "
+            "registry is read first and takes precedence over the legacy "
+            "variables."
+        )
+
     def get_oauth_base_url(self) -> str:
         """
         Get OAuth base URL for constructing OAuth endpoints.
