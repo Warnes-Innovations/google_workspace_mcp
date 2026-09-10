@@ -27,9 +27,12 @@ Search for files and folders across My Drive and shared drives.
 | include_items_from_all_drives | boolean | no | true | Include shared drive items when no drive_id set |
 | corpora | string | no | | `user`, `domain`, `drive`, or `allDrives`. Defaults to `drive` when drive_id is set. Prefer `user` or `drive` over `allDrives` |
 | file_type | string | no | | Friendly name (`folder`, `document`/`doc`, `spreadsheet`/`sheet`, `presentation`/`slides`, `form`, `drawing`, `pdf`, `shortcut`, `script`, `site`, `jam`/`jamboard`) or raw MIME type |
-| detailed | boolean | no | true | Include size, modified time, and link |
+| detailed | boolean | no | true | Include size, creation/modification times, last editor, and link. **Verbosity only** -- it does not change what the tool can see |
 | order_by | string | no | | Sort order (see Sort Order below) |
 | include_trashed | boolean | no | false | Include files in the trash. A `trashed` clause (`=` or `!=`) written into `query` always wins over this flag |
+| include_sharing | boolean | no | **false** | Fetch each file's ACLs and annotate publicly shared files with `Anyone with link: <role>`. A **privilege** switch, deliberately separate from `detailed` and opt-in |
+
+**On `include_sharing`.** It is off by default because this is a `core`-tier tool and sharing state is the question `get_drive_file_permissions` and `check_drive_file_public_access` are gated to the `complete` tier for -- fetching ACLs here by default let the lowest tier answer it. Prefer those two tools when sharing state is what you actually want: they report it fully, whereas this only flags the "anyone with link" case. **An absent annotation is not evidence a file is unshared** -- it means either no `anyone` permission or that ACLs were never fetched, and Drive omits the permissions field entirely for Shared Drive items regardless.
 
 ### list_drive_items
 List files and folders in a specific folder.
@@ -88,7 +91,7 @@ Every sort is **descending** -- ascending time order is never what "recent" mean
 
 ⚠️ **Do not combine `order_by='sharedWithMe'` with `drive_id`.** Shared drive files are reached through drive membership and are not in your "Shared with me" collection, so the two conditions intersect to nothing and you get `No recent files found` — which looks identical to an empty drive. For recent activity within one shared drive use the default `recency`, or `lastModified`, with `drive_id`.
 
-**No permission data.** Unlike `search_drive_files`, this tool does not request file ACLs, so no "Anyone with link" annotation appears. That is deliberate: an absent annotation would be indistinguishable from "not shared" -- and Drive omits the field entirely for Shared Drive items. Use `get_drive_file_permissions` or `check_drive_file_public_access` when sharing state is the question.
+**No permission data.** This tool never requests file ACLs, so no "Anyone with link" annotation appears — and unlike `search_drive_files` it has no `include_sharing` flag to turn them on. That is deliberate: an absent annotation would be indistinguishable from "not shared", and Drive omits the field entirely for Shared Drive items. Use `get_drive_file_permissions` or `check_drive_file_public_access` when sharing state is the question.
 
 ---
 
