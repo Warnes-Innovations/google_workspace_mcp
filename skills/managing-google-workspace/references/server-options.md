@@ -21,6 +21,23 @@ These mirror the MCP server's own flags. **Default setup**: use stdio transport 
 | External OAuth | `EXTERNAL_OAUTH21_PROVIDER=true` | External OAuth flow with bearer tokens. Requires OAuth 2.1 |
 | Stateless | `WORKSPACE_MCP_STATELESS_MODE=true` | Multi-user + stateless, requires OAuth 2.1 |
 
+### start_google_auth
+
+The one tool in this section. In most cases you should NOT call it: every
+Workspace tool handles authentication on its own and prompts when it needs to.
+Reach for it only to re-authenticate as a different user, to authenticate ahead
+of time, or to retry after the automatic flow failed.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| service_name | string | yes | | The Google service to authenticate for |
+| user_google_email | string | no | `USER_GOOGLE_EMAIL` env | |
+
+It is legacy OAuth 2.0 and is **disabled** under OAuth 2.1 (`MCP_ENABLE_OAUTH21=true`):
+it returns an explanatory string rather than starting a flow. Under an external
+provider, supply a bearer token in the `Authorization` header and retry the original
+tool instead.
+
 ## Tool filtering
 
 | Option | Effect |

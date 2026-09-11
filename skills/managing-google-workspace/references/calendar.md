@@ -61,6 +61,63 @@ Create, update, or delete a calendar event.
 
 ---
 
+### create_calendar
+Create a new secondary calendar. Note that Out of Office and Focus Time status
+events live on the *primary* calendar, so a secondary calendar created here is
+not a place to put them.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| user_google_email | string | yes | | |
+| summary | string | yes | | Title of the new calendar |
+| description | string | no | | |
+| timezone | string | no | | IANA zone, e.g. `America/New_York` |
+
+---
+
+## Status Events
+
+Out of Office and Focus Time are not ordinary events: they auto-decline conflicting
+invitations and change the user's status across Google Workspace. Both share the same
+four-action shape and the same parameters, and both must live on a **primary** calendar
+-- passing a secondary `calendar_id` will not produce a status change.
+
+### manage_out_of_office
+Create, list, update, or delete Out of Office events, which set the user's status to
+"Out of office" across Workspace.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| user_google_email | string | yes | | |
+| action | string | yes | | `create`, `list`, `update`, or `delete` |
+| start_time | string | for create | | `YYYY-MM-DD` or RFC3339. Date-only becomes midnight-to-midnight |
+| end_time | string | for create | | Same format, **exclusive** -- one full day on Apr 5 is `2026-04-05` to `2026-04-06` |
+| summary | string | no | `Out of Office` | Text shown on the calendar |
+| auto_decline_mode | string | no | `declineAllConflictingInvitations` | Or `declineOnlyNewConflictingInvitations`, `declineNone` |
+| decline_message | string | no | | Sent when auto-declining |
+| recurrence | array | no | | RFC5545 rules, e.g. `["RRULE:FREQ=WEEKLY;COUNT=10"]` |
+| timezone | string | no | | Required for date-only values, or dateTime without a UTC offset |
+| time_min | string | for list | now | Recurring series expand into instances in range |
+| time_max | string | for list | | |
+| max_results | integer | no | 10 | For `list` |
+| event_id | string | for update/delete | | |
+| calendar_id | string | no | `primary` | Must be a primary calendar for the status to apply |
+
+### manage_focus_time
+Create, list, update, or delete Focus Time events, which auto-decline meetings and by
+default set Google Chat status to Do Not Disturb.
+
+Same parameters as `manage_out_of_office`, plus:
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| description | string | no | | Context for what the focus block is for |
+| chat_status | string | no | `doNotDisturb` | Or `available` |
+
+`summary` defaults to `Focus Time` rather than `Out of Office`.
+
+---
+
 ## Availability
 
 ### query_freebusy

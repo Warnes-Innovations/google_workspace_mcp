@@ -104,6 +104,8 @@ For parameters: [references/gmail.md](references/gmail.md)
 | Get shareable link | `get_drive_shareable_link` |
 | Check public access | `check_drive_file_public_access` |
 | Import file to Google Doc | `import_to_google_doc` |
+| Import file to Google Sheets | `import_to_google_sheets` |
+| Import file to Google Slides | `import_to_google_slides` |
 
 For parameters: [references/drive.md](references/drive.md)
 
@@ -115,6 +117,9 @@ For parameters: [references/drive.md](references/drive.md)
 | Get events | `get_events` |
 | Create/update/delete event | `manage_event` |
 | Check availability | `query_freebusy` |
+| Create a secondary calendar | `create_calendar` |
+| Out-of-office blocks | `manage_out_of_office` |
+| Focus Time blocks | `manage_focus_time` |
 
 For parameters: [references/calendar.md](references/calendar.md)
 
@@ -140,6 +145,7 @@ For parameters: [references/calendar.md](references/calendar.md)
 | Search docs | `search_docs` |
 | Comments | `manage_document_comment` / `list_document_comments` |
 | Debug table structure | `debug_table_structure` |
+| Diagnose a stale server checkout | `debug_docs_runtime_info` |
 
 For parameters: [references/docs.md](references/docs.md)
 
@@ -157,6 +163,9 @@ For parameters: [references/docs.md](references/docs.md)
 | Move rows between sheets | `move_sheet_rows` |
 | List spreadsheets | `list_spreadsheets` |
 | Comments | `manage_spreadsheet_comment` / `list_spreadsheet_comments` |
+| List structured tables | `list_sheet_tables` |
+| Append rows to a table | `append_table_rows` |
+| Resize / freeze / hide / insert / delete rows and columns | `resize_sheet_dimensions` |
 
 For parameters: [references/sheets.md](references/sheets.md)
 

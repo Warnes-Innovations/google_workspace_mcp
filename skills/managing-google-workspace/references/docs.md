@@ -290,6 +290,21 @@ Detailed view of a single table's layout: dimensions, cell positions, current co
 | document_id | string | yes | | |
 | table_index | integer | no | 0 | 0-based table number (0 = first table) |
 
+### debug_docs_runtime_info
+Diagnostic only: reports which checkout the running MCP server actually loaded --
+a runtime canary value plus the resolved source paths of `docs_tools` and the
+header/footer manager. Reach for it when an edit behaves like an older version of
+the code, to tell "my change is wrong" from "the server is serving a stale copy".
+Takes no arguments beyond the caller.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| user_google_email | string | yes | | |
+
+This is a temporary diagnostic and is the one registered tool absent from
+`core/tool_tiers.yaml`, so do not rely on it being reachable under a `--tool-tier`
+setting.
+
 ---
 
 ## Batch Operations

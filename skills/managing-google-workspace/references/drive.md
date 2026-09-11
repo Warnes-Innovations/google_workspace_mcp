@@ -7,7 +7,7 @@ MCP tools for Google Drive file management, search, content retrieval, and permi
 - Content & Download: get_drive_file_content, get_drive_file_download_url
 - Create & Modify: create_drive_file, create_drive_folder, copy_drive_file, update_drive_file
 - Permissions & Sharing: set_drive_file_permissions, manage_drive_access, get_drive_file_permissions, get_drive_shareable_link, check_drive_file_public_access
-- Import: import_to_google_doc
+- Import: import_to_google_doc, import_to_google_sheets, import_to_google_slides
 - Tips
 
 ---
@@ -341,6 +341,40 @@ Imports a file (Markdown, DOCX, TXT, HTML, RTF, ODT) into Google Docs format wit
 | file_url | any | no | | Remote URL to fetch (http/https) |
 | source_format | any | no | (auto-detect) | `md`, `markdown`, `docx`, `txt`, `html`, `rtf`, `odt` |
 | folder_id | string | no | root | Parent folder ID |
+
+### import_to_google_sheets
+Imports a spreadsheet (XLSX, XLS, ODS, CSV, TSV) into Google Sheets format with automatic conversion.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| user_google_email | string | yes | | |
+| file_name | string | yes | | Name for the new spreadsheet (extension ignored) |
+| content | string | no | | Text content for CSV/TSV. Short snippets only |
+| file_path | string | no | | Local path or `file://` URL. Preferred for batch work -- the caller never loads the bytes |
+| file_url | string | no | | Remote URL to fetch (http/https) |
+| source_format | string | no | (auto-detect) | `xlsx`, `xls`, `ods`, `csv`, `tsv` |
+| folder_id | string | no | root | Parent folder ID |
+| base64_content | string | no | | Standard base64 bytes for XLSX, XLS, ODS |
+| base64_sha256 | string | no | | Expected SHA-256 of the decoded bytes; pass it to catch a corrupted payload |
+
+### import_to_google_slides
+Imports a presentation (PPTX, PPT, ODP) into Google Slides format with automatic conversion.
+Unlike the Docs and Sheets importers there is no `content` parameter -- presentations are
+binary, so the source is a path, a URL, or base64.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| user_google_email | string | yes | | |
+| file_name | string | yes | | Name for the new presentation (extension ignored) |
+| file_path | string | no | | Local path or `file://` URL. Preferred for batch work |
+| file_url | string | no | | Remote URL to fetch (http/https) |
+| source_format | string | no | (auto-detect) | `pptx`, `ppt`, `odp` |
+| folder_id | string | no | root | Parent folder ID |
+| base64_content | string | no | | Standard base64 bytes for PPTX or ODP |
+| base64_sha256 | string | no | | Expected SHA-256 of the decoded bytes |
+
+Note that `file_path` is not streamed: it may still read the whole file into memory,
+so very large sources need a chunked upload path rather than these tools.
 
 ---
 
