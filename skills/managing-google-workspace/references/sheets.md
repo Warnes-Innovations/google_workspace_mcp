@@ -6,6 +6,8 @@ MCP tools for reading, writing, formatting, and managing Google Sheets. All tool
 - Search & Info: list_spreadsheets, get_spreadsheet_info
 - Read & Write: read_sheet_values, modify_sheet_values
 - Create: create_spreadsheet, create_sheet, move_sheet_rows
+- Structured tables: list_sheet_tables, append_table_rows
+- Sheet dimensions: resize_sheet_dimensions
 - Formatting: format_sheet_range, manage_conditional_formatting
 - Comments: list_spreadsheet_comments, manage_spreadsheet_comment
 - Tips
@@ -97,6 +99,67 @@ Move rows from one sheet to another within the same spreadsheet. Preserves formu
 | start_row | integer | yes | | First row to move (1-based, inclusive) |
 | end_row | integer | yes | | Last row to move (1-based, inclusive) |
 | destination_sheet | string | yes | | Name of the sheet to move rows to |
+
+---
+
+## Structured Tables
+
+Google Sheets "tables" are a named, typed range with its own schema -- not the same
+thing as a plain block of cells. Appending through the table API extends the table
+range, so banding, filters and column types follow the new rows; writing the same
+cells with `modify_sheet_values` does not.
+
+### list_sheet_tables
+List every structured table in a spreadsheet with its ID, name, range, and columns.
+Run this first -- `append_table_rows` needs a `table_id`, and there is no other way
+to discover one.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| user_google_email | string | yes | | |
+| spreadsheet_id | string | yes | | |
+
+### append_table_rows
+Append rows to the end of a structured table's body, extending the table range.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| user_google_email | string | yes | | |
+| spreadsheet_id | string | yes | | |
+| table_id | string | yes | | From `list_sheet_tables` |
+| values | array or JSON string | yes | | 2D array; each inner list is one row |
+
+---
+
+## Sheet Dimensions
+
+### resize_sheet_dimensions
+Sheet-level dimension properties in one call: resize, auto-resize, freeze,
+hide/unhide, and insert/delete rows and columns. Every parameter below is
+optional except the first two -- pass only the operations you want.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| user_google_email | string | yes | | |
+| spreadsheet_id | string | yes | | |
+| sheet_name | string | no | first sheet | |
+| column_sizes | dict or JSON string | no | | Column letter to pixel width, e.g. `{"A": 200}` |
+| row_sizes | dict or JSON string | no | | 1-based row number to pixel height, e.g. `{"1": 40}` |
+| auto_resize_columns | array or JSON string | no | | Column letters to fit to content, e.g. `["A", "B"]` |
+| auto_resize_rows | array or JSON string | no | | 1-based row numbers to fit to content |
+| frozen_row_count | integer | no | | Rows frozen from the top; `0` unfreezes |
+| frozen_column_count | integer | no | | Columns frozen from the left; `0` unfreezes |
+| hide_columns | array or JSON string | no | | Column letters |
+| unhide_columns | array or JSON string | no | | Column letters |
+| hide_rows | array or JSON string | no | | 1-based row numbers |
+| unhide_rows | array or JSON string | no | | 1-based row numbers |
+| insert_rows | integer | no | | How many rows to insert |
+| insert_rows_at | integer | no | end of sheet | 1-based row to insert before |
+| insert_columns | integer | no | | How many columns to insert |
+| insert_columns_at | string | no | end of sheet | Column letter to insert before |
+| delete_rows | array or JSON string | no | | 1-based row numbers; best for non-contiguous |
+| delete_row_range | string | no | | Contiguous `"start:end"`, 1-based inclusive, e.g. `"5:10"` -- cheaper than `delete_rows` for large runs |
+| delete_columns | array or JSON string | no | | Column letters |
 
 ---
 
