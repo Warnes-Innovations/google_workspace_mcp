@@ -155,3 +155,57 @@ def test_census_would_notice_a_missing_tool(tool_names):
     fabricated = "manage_nonexistent_widget"
     assert fabricated not in tool_names, "pick a name that is genuinely not a tool"
     assert fabricated not in routed, "pick a name that is genuinely undocumented"
+
+
+# Tools deliberately reachable ONLY when no --tool-tier is passed. Adding a name
+# here is a decision that it should be unreachable under every tier, so each one
+# carries the reason. An entry that no longer holds should be deleted and the
+# tool added to a tier -- `complete` unless there is a case for narrower.
+UNTIERED = {
+    "debug_docs_runtime_info": (
+        "Diagnostic, not a workspace capability: it reports which checkout the "
+        "running server loaded, and its own docstring calls it temporary. Left "
+        "out of every tier so a tiered deployment does not ship it. If it "
+        "should be callable under a tier, add it to `complete` and delete this "
+        "entry."
+    ),
+}
+
+
+def _tiered_tool_names():
+    """Every tool reachable at the widest tier."""
+    from core.tool_tier_loader import ToolTierLoader
+
+    return set(ToolTierLoader().get_tools_up_to_tier("complete"))
+
+
+def test_every_registered_tool_is_reachable_under_a_tier(tool_names):
+    """core/tool_tiers.yaml is an allowlist, so a tool missing from it is
+    unreachable under any --tool-tier -- silently, with no error and no warning.
+
+    A tool may legitimately be left out; it may not be left out SILENTLY. Name
+    it in UNTIERED above, with the reason, and this passes.
+    """
+    tiered = _tiered_tool_names()
+    unreachable = [
+        name for name in tool_names if name not in tiered and name not in UNTIERED
+    ]
+    assert not unreachable, (
+        "registered but in no tier and not declared untiered, so unreachable "
+        f"under every --tool-tier including `complete`: {unreachable}"
+    )
+
+
+def test_untiered_register_has_no_stale_entries(tool_names):
+    """The other direction: an UNTIERED entry that is no longer true is worse
+    than no entry, because it asserts a decision nobody is making any more."""
+    tiered = _tiered_tool_names()
+    for name, reason in UNTIERED.items():
+        assert name in tool_names, (
+            f"UNTIERED names {name!r}, which is not a registered tool; delete the entry"
+        )
+        assert name not in tiered, (
+            f"UNTIERED says {name!r} is deliberately out of every tier, but it "
+            "is in `complete`; delete the entry"
+        )
+        assert reason.strip(), f"UNTIERED entry {name!r} has no reason"
