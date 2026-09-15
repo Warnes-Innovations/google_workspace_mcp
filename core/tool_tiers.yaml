@@ -1,3 +1,19 @@
+# Tool tiers: which tools a deployment gets at --tool-tier core / extended /
+# complete. Tiers are cumulative -- `extended` includes `core`, `complete`
+# includes both.
+#
+# THIS FILE IS AN ALLOWLIST, AND OMISSION IS NOT NEUTRAL. A registered tool
+# that appears in no tier here is unreachable under ANY --tool-tier setting,
+# `complete` included; it survives only when no tier is passed at all. Nothing
+# errors, nothing warns -- the tool is simply absent, which reads to an
+# operator exactly like it was never built.
+#
+# So a tool left out on purpose must be SAID to be left out, because silence
+# here is indistinguishable from an oversight. The register of deliberate
+# omissions, with a reason for each, is UNTIERED in
+# tests/test_skill_tool_census.py, and a test fails on any registered tool that
+# is neither listed in a tier below nor named there.
+
 gmail:
   core:
     - search_gmail_messages
