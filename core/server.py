@@ -430,8 +430,9 @@ def configure_server_for_http():
     if oauth21_enabled:
         if not config.is_configured():
             raise RuntimeError(
-                "streamable-http transport requires GOOGLE_OAUTH_CLIENT_ID so OAuth 2.1 "
-                "protocol authentication can be configured."
+                "streamable-http transport with OAuth 2.1 needs one OAuth client "
+                "for protocol authentication, and none is available. "
+                + config.missing_default_client_remedy()
             )
 
         if not config.client_secret and not config.is_external_oauth21_provider():

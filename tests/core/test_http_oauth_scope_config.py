@@ -62,11 +62,18 @@ def test_configure_server_for_http_rejects_unconfigured_oauth21(monkeypatch):
         lambda: SimpleNamespace(
             is_oauth21_enabled=lambda: True,
             is_configured=lambda: False,
+            missing_default_client_remedy=lambda: "REMEDY-FROM-CONFIG",
         ),
     )
 
-    with pytest.raises(RuntimeError, match="requires GOOGLE_OAUTH_CLIENT_ID"):
+    with pytest.raises(RuntimeError, match="needs one OAuth client") as excinfo:
         server_module.configure_server_for_http()
+
+    # The remedy is not restated here: it comes from the config, which is the
+    # only place that knows WHICH of the two causes applies. A literal
+    # "set GOOGLE_OAUTH_CLIENT_ID" here is what let this message drift out of
+    # step with the registry in the first place.
+    assert "REMEDY-FROM-CONFIG" in str(excinfo.value)
 
 
 def test_configure_server_for_http_uses_protocol_auth_required_scopes(monkeypatch):
