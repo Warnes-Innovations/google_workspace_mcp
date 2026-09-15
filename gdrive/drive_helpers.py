@@ -149,7 +149,7 @@ def validate_share_role(role: str) -> None:
         ValueError: If role is not reader, commenter, or writer
     """
     if role not in VALID_SHARE_ROLES:
-        raise ValueError(
+        raise UserInputError(
             f"Invalid role '{role}'. Must be one of: {', '.join(sorted(VALID_SHARE_ROLES))}"
         )
 
@@ -165,7 +165,7 @@ def validate_share_type(share_type: str) -> None:
         ValueError: If share_type is not user, group, domain, or anyone
     """
     if share_type not in VALID_SHARE_TYPES:
-        raise ValueError(
+        raise UserInputError(
             f"Invalid share_type '{share_type}'. Must be one of: {', '.join(sorted(VALID_SHARE_TYPES))}"
         )
 
@@ -186,7 +186,7 @@ def validate_expiration_time(expiration_time: str) -> None:
         ValueError: If expiration_time is not valid RFC 3339 format
     """
     if not RFC3339_PATTERN.match(expiration_time):
-        raise ValueError(
+        raise UserInputError(
             f"Invalid expiration_time '{expiration_time}'. "
             "Must be RFC 3339 format (e.g., '2025-01-15T00:00:00Z')"
         )
@@ -485,19 +485,19 @@ def resolve_file_type_mime(file_type: str) -> str:
     """
     normalized = file_type.strip()
     if not normalized:
-        raise ValueError("file_type cannot be empty.")
+        raise UserInputError("file_type cannot be empty.")
 
     if "/" in normalized:
         normalized_mime = normalized.lower()
         if not MIME_TYPE_PATTERN.fullmatch(normalized_mime):
-            raise ValueError(
+            raise UserInputError(
                 f"Invalid MIME type '{file_type}'. Expected format like 'application/pdf'."
             )
         return normalized_mime
     lower = normalized.lower()
     if lower not in FILE_TYPE_MIME_MAP:
         valid = ", ".join(sorted(FILE_TYPE_MIME_MAP.keys()))
-        raise ValueError(
+        raise UserInputError(
             f"Unknown file_type '{file_type}'. Pass a MIME type directly (e.g. "
             f"'application/pdf') or use one of the friendly names: {valid}"
         )
@@ -726,7 +726,7 @@ def _decode_base64_upload(
     max_encoded_len = ((MAX_INLINE_BASE64_BYTES + 2) // 3) * 4
     if len(base64_content) > max_encoded_len:
         estimated_decoded_size = len(base64_content) * 3 // 4
-        raise ValueError(
+        raise UserInputError(
             f"[{tool_name}] Inline payload exceeds the "
             f"{MAX_INLINE_BASE64_BYTES // (1024 * 1024)} MB limit "
             f"(estimated {estimated_decoded_size // (1024 * 1024)} MB). "
@@ -736,10 +736,10 @@ def _decode_base64_upload(
     try:
         file_data = base64.b64decode(base64_content, validate=True)
     except (binascii.Error, ValueError) as exc:
-        raise ValueError("'base64_content' must be valid standard base64.") from exc
+        raise UserInputError("'base64_content' must be valid standard base64.") from exc
 
     if len(file_data) > MAX_INLINE_BASE64_BYTES:
-        raise ValueError(
+        raise UserInputError(
             f"[{tool_name}] Inline payload exceeds the "
             f"{MAX_INLINE_BASE64_BYTES // (1024 * 1024)} MB limit "
             f"({len(file_data) // (1024 * 1024)} MB). "
@@ -749,12 +749,12 @@ def _decode_base64_upload(
     if expected_sha256 is not None:
         normalized_sha256 = expected_sha256.strip().lower()
         if not re.fullmatch(r"[0-9a-f]{64}", normalized_sha256):
-            raise ValueError(
+            raise UserInputError(
                 "'base64_sha256' must be a 64-character hexadecimal SHA-256."
             )
         actual_sha256 = hashlib.sha256(file_data).hexdigest()
         if actual_sha256 != normalized_sha256:
-            raise ValueError(
+            raise UserInputError(
                 f"[{tool_name}] Inline binary payload failed its SHA-256 integrity check. "
                 "The base64 content was altered or truncated before reaching the server."
             )
@@ -765,13 +765,13 @@ def _decode_base64_upload(
             with zipfile.ZipFile(io.BytesIO(file_data)) as archive:
                 members = archive.infolist()
                 if len(members) > MAX_ZIP_MEMBER_COUNT:
-                    raise ValueError(
+                    raise UserInputError(
                         f"[{tool_name}] Inline {mime_type} archive contains "
                         f"{len(members)} members (limit {MAX_ZIP_MEMBER_COUNT})."
                     )
                 total_uncompressed = sum(m.file_size for m in members)
                 if total_uncompressed > MAX_ZIP_UNCOMPRESSED_BYTES:
-                    raise ValueError(
+                    raise UserInputError(
                         f"[{tool_name}] Inline {mime_type} archive uncompressed size "
                         f"({total_uncompressed // (1024 * 1024)} MB) exceeds the "
                         f"{MAX_ZIP_UNCOMPRESSED_BYTES // (1024 * 1024)} MB limit."
@@ -781,27 +781,27 @@ def _decode_base64_upload(
                     and total_uncompressed // max(len(file_data), 1)
                     > MAX_ZIP_COMPRESSION_RATIO
                 ):
-                    raise ValueError(
+                    raise UserInputError(
                         f"[{tool_name}] Inline {mime_type} archive compression ratio "
                         f"exceeds {MAX_ZIP_COMPRESSION_RATIO}x."
                     )
                 names = set(archive.namelist())
                 missing = required_members - names
                 if missing:
-                    raise ValueError(
+                    raise UserInputError(
                         f"[{tool_name}] Inline {mime_type} payload is missing required "
                         f"archive members: {', '.join(sorted(missing))}."
                     )
                 corrupt_member = archive.testzip()
                 if corrupt_member is not None:
-                    raise ValueError(
+                    raise UserInputError(
                         f"[{tool_name}] Inline {mime_type} payload contains a corrupt "
                         f"archive member: {corrupt_member}."
                     )
         except ValueError:
             raise
         except (zipfile.BadZipFile, EOFError, RuntimeError, zlib.error) as exc:
-            raise ValueError(
+            raise UserInputError(
                 f"[{tool_name}] Inline {mime_type} payload is not a valid, intact archive."
             ) from exc
 
@@ -836,7 +836,7 @@ async def _stream_url_with_validation(
         async for chunk in resp.aiter_bytes(chunk_size=DOWNLOAD_CHUNK_SIZE_BYTES):
             total_bytes += len(chunk)
             if total_bytes > MAX_DOWNLOAD_BYTES:
-                raise ValueError(
+                raise UserInputError(
                     f"Download from {redacted_url} exceeded {MAX_DOWNLOAD_BYTES} byte limit "
                     f"({total_bytes} bytes)"
                 )
@@ -976,17 +976,17 @@ async def _resolve_import_media(
         1 for x in (content, file_path, file_url, base64_content) if x is not None
     )
     if source_count == 0:
-        raise ValueError(
+        raise UserInputError(
             "You must provide one of: 'content', 'file_path', 'file_url', or "
             "'base64_content'."
         )
     if source_count > 1:
-        raise ValueError(
+        raise UserInputError(
             "Provide only one of: 'content', 'file_path', 'file_url', or "
             "'base64_content'."
         )
     if base64_sha256 is not None and base64_content is None:
-        raise ValueError("'base64_sha256' can only be used with 'base64_content'.")
+        raise UserInputError("'base64_sha256' can only be used with 'base64_content'.")
 
     # Determine source MIME type from the explicit hint or auto-detection.
     if passthrough_mime_type:
@@ -994,7 +994,7 @@ async def _resolve_import_media(
     elif source_format:
         format_key = f".{source_format.lower().lstrip('.')}"
         if format_key not in format_map:
-            raise ValueError(
+            raise UserInputError(
                 f"Unsupported source_format: '{source_format}'. "
                 f"Supported: {', '.join(ext.lstrip('.') for ext in format_map.keys())}"
             )
@@ -1012,7 +1012,7 @@ async def _resolve_import_media(
 
     if content is not None:
         if not _is_text_like_mime_type(source_mime_type):
-            raise ValueError(
+            raise UserInputError(
                 f"[{tool_name}] 'content' is only valid for text-based source formats, "
                 f"but the source resolves to '{source_mime_type}' (a binary format). "
                 f"Provide a 'file_path' or 'file_url' for binary formats instead."
@@ -1042,7 +1042,7 @@ async def _resolve_import_media(
         elif parsed_url.scheme == "":
             actual_path = file_path
         else:
-            raise ValueError(
+            raise UserInputError(
                 f"file_path should be a local path or file:// URL, got: {file_path}"
             )
 
@@ -1050,7 +1050,7 @@ async def _resolve_import_media(
         if not path_obj.exists():
             raise FileNotFoundError(f"File not found: {actual_path}")
         if not path_obj.is_file():
-            raise ValueError(f"Path is not a file: {actual_path}")
+            raise UserInputError(f"Path is not a file: {actual_path}")
 
         file_data = await asyncio.to_thread(path_obj.read_bytes)
         logger.info(f"[{tool_name}] Read local file: {len(file_data)} bytes")
@@ -1062,7 +1062,9 @@ async def _resolve_import_media(
     else:  # file_url is not None
         parsed_url = urlparse(file_url)
         if parsed_url.scheme not in ("http", "https"):
-            raise ValueError(f"file_url must be http:// or https://, got: {file_url}")
+            raise UserInputError(
+                f"file_url must be http:// or https://, got: {file_url}"
+            )
 
         remote_file_data, remote_content_type = await _download_url_to_bytes(file_url)
 
@@ -1082,7 +1084,7 @@ async def _resolve_import_media(
     if not passthrough_mime_type and source_mime_type not in format_map.values():
         if remote_file_data is not None:
             remote_file_data.close()
-        raise ValueError(
+        raise UserInputError(
             f"[{tool_name}] Detected source MIME type '{source_mime_type}' is not "
             f"supported by this tool. Supported source formats: "
             f"{', '.join(ext.lstrip('.') for ext in sorted(format_map.keys()))}."

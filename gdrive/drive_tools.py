@@ -26,6 +26,7 @@ from auth.oauth_config import is_stateless_mode
 from core.attachment_storage import get_attachment_storage, get_attachment_url
 from core.utils import (
     GOOGLE_API_WRITE_RETRIES,
+    UserInputError,
     as_single_line,
     sanitize_display_text,
     IMAGE_MIME_TYPES,
@@ -892,7 +893,7 @@ async def list_drive_items(
             include_organizers=include_organizers,
         )
     if normalized_resource_type != "items":
-        raise ValueError("resource_type must be either 'items' or 'shared_drives'")
+        raise UserInputError("resource_type must be either 'items' or 'shared_drives'")
 
     resolved_folder_id = await resolve_folder_id(service, folder_id)
     final_query = f"'{resolved_folder_id}' in parents and trashed=false"
@@ -1194,22 +1195,28 @@ async def create_drive_file(
         and base64_content is None
         and mime_type != FOLDER_MIME_TYPE
     ):
-        raise ValueError(
+        raise UserInputError(
             "You must provide one of 'content', 'fileUrl', or 'base64_content'."
         )
     if base64_content is not None and has_existing_content_source:
-        raise ValueError("'base64_content' cannot be used with 'content' or 'fileUrl'.")
+        raise UserInputError(
+            "'base64_content' cannot be used with 'content' or 'fileUrl'."
+        )
     if content_mime_type is not None and base64_content is None:
-        raise ValueError("'content_mime_type' can only be used with 'base64_content'.")
+        raise UserInputError(
+            "'content_mime_type' can only be used with 'base64_content'."
+        )
     if base64_content is not None and not content_mime_type:
-        raise ValueError("'content_mime_type' is required when using 'base64_content'.")
+        raise UserInputError(
+            "'content_mime_type' is required when using 'base64_content'."
+        )
     if base64_sha256 is not None and base64_content is None:
-        raise ValueError("'base64_sha256' can only be used with 'base64_content'.")
+        raise UserInputError("'base64_sha256' can only be used with 'base64_content'.")
     if base64_content is not None and (
         mime_type.startswith(GOOGLE_APPS_MIME_PREFIX)
         or content_mime_type.startswith(GOOGLE_APPS_MIME_PREFIX)
     ):
-        raise ValueError(
+        raise UserInputError(
             "Google-native files cannot be created from inline binary bytes with "
             "create_drive_file. Use import_to_google_doc, import_to_google_sheets, "
             "or import_to_google_slides so Drive receives separate source and target "
@@ -1218,7 +1225,7 @@ async def create_drive_file(
 
     if mime_type == FOLDER_MIME_TYPE:
         if base64_content is not None or content is not None or bool(fileUrl):
-            raise ValueError(
+            raise UserInputError(
                 "Folders cannot contain file content. Remove 'content', "
                 "'base64_content', and 'fileUrl' when creating a folder, "
                 "or use a different mime_type."
@@ -1293,7 +1300,7 @@ async def create_drive_file(
             try:
                 path_obj = validate_file_path(file_path)
             except (OSError, ValueError) as exc:
-                raise ValueError(
+                raise UserInputError(
                     f"Local file could not be accessed ({type(exc).__name__})."
                 ) from None
             if not path_obj.exists():
@@ -2186,13 +2193,13 @@ async def update_drive_file(
     logger.info(f"[update_drive_file] Updating file {file_id} for {user_google_email}")
 
     if mode not in CONTENT_UPDATE_MODES:
-        raise ValueError(
+        raise UserInputError(
             f"Unsupported mode: '{mode}'. Supported: {', '.join(CONTENT_UPDATE_MODES)}."
         )
     if mode != "replace" and mime_type is not None:
-        raise ValueError(f"mime_type cannot be set when mode='{mode}'.")
+        raise UserInputError(f"mime_type cannot be set when mode='{mode}'.")
     if mode != "replace" and content is None:
-        raise ValueError(
+        raise UserInputError(
             f"mode='{mode}' requires 'content' (the text to add). "
             "'file_path' and 'file_url' are only supported with mode='replace'."
         )
@@ -2234,7 +2241,7 @@ async def update_drive_file(
             if requested
         ]
         if replacing_content and resource_local_updates:
-            raise ValueError(
+            raise UserInputError(
                 "Content and shortcut-local metadata cannot be updated in one call "
                 f"({', '.join(resource_local_updates)}). Update the shortcut metadata "
                 "and target content in separate calls."
@@ -2253,7 +2260,7 @@ async def update_drive_file(
             if requested
         ]
         if unsupported_shortcut_updates:
-            raise ValueError(
+            raise UserInputError(
                 "These fields cannot be updated on a Drive shortcut: "
                 f"{', '.join(unsupported_shortcut_updates)}. Pass the target file ID "
                 "to change target MIME or permission controls."
@@ -2341,14 +2348,14 @@ async def update_drive_file(
                 supported_targets = ", ".join(
                     mime for mime in IMPORT_FORMATS_BY_GOOGLE_MIME_TYPE
                 )
-                raise ValueError(
+                raise UserInputError(
                     "Content replacement is not supported for this Google Apps type "
                     f"({target_mime_type}). Editable Google types: {supported_targets}."
                 )
 
             if mode != "replace":
                 if format_map is not None:
-                    raise ValueError(
+                    raise UserInputError(
                         f"mode='{mode}' is only supported for non-Google files, because a "
                         f"native {target_mime_type} would have to be exported and re-imported "
                         "to splice text in. Use insert_doc_elements, modify_doc_text, or "
@@ -2358,7 +2365,7 @@ async def update_drive_file(
                 try:
                     existing_text = existing_bytes.decode("utf-8")
                 except UnicodeDecodeError as exc:
-                    raise ValueError(
+                    raise UserInputError(
                         f"mode='{mode}' requires a UTF-8 text file, but "
                         f"'{current_file.get('name', file_id)}' ({target_mime_type}) "
                         "could not be decoded as text."
@@ -2609,7 +2616,7 @@ async def manage_drive_access(
     """
     valid_actions = ("grant", "grant_batch", "update", "revoke", "transfer_owner")
     if action not in valid_actions:
-        raise ValueError(
+        raise UserInputError(
             f"Invalid action '{action}'. Must be one of: {', '.join(valid_actions)}"
         )
 
@@ -2625,9 +2632,11 @@ async def manage_drive_access(
         validate_share_type(share_type)
 
         if share_type in ("user", "group") and not share_with:
-            raise ValueError(f"share_with is required for share_type '{share_type}'")
+            raise UserInputError(
+                f"share_with is required for share_type '{share_type}'"
+            )
         if share_type == "domain" and not share_with:
-            raise ValueError(
+            raise UserInputError(
                 "share_with (domain name) is required for share_type 'domain'"
             )
 
@@ -2681,7 +2690,7 @@ async def manage_drive_access(
     # --- grant_batch: share with multiple recipients ---
     if action == "grant_batch":
         if not recipients:
-            raise ValueError("recipients list is required for 'grant_batch' action")
+            raise UserInputError("recipients list is required for 'grant_batch' action")
 
         resolved_file_id, file_metadata = await resolve_drive_item(
             service, file_id, extra_fields="name, webViewLink"
@@ -2783,9 +2792,9 @@ async def manage_drive_access(
     # --- update: modify an existing permission ---
     if action == "update":
         if not permission_id:
-            raise ValueError("permission_id is required for 'update' action")
+            raise UserInputError("permission_id is required for 'update' action")
         if not role and not expiration_time:
-            raise ValueError(
+            raise UserInputError(
                 "Must provide at least one of: role, expiration_time for 'update' action"
             )
 
@@ -2841,7 +2850,7 @@ async def manage_drive_access(
     # --- revoke: remove an existing permission ---
     if action == "revoke":
         if not permission_id:
-            raise ValueError("permission_id is required for 'revoke' action")
+            raise UserInputError("permission_id is required for 'revoke' action")
 
         resolved_file_id, file_metadata = await resolve_drive_item(
             service, file_id, extra_fields="name"
@@ -2869,7 +2878,7 @@ async def manage_drive_access(
     # --- transfer_owner: transfer file ownership ---
     # action == "transfer_owner"
     if not new_owner_email:
-        raise ValueError("new_owner_email is required for 'transfer_owner' action")
+        raise UserInputError("new_owner_email is required for 'transfer_owner' action")
 
     resolved_file_id, file_metadata = await resolve_drive_item(
         service, file_id, extra_fields="name, owners"
@@ -3046,13 +3055,13 @@ async def set_drive_file_permissions(
         and writers_can_share is None
         and copy_requires_writer_permission is None
     ):
-        raise ValueError(
+        raise UserInputError(
             "Must provide at least one of: link_sharing, writers_can_share, copy_requires_writer_permission"
         )
 
     valid_link_sharing = {"off", "reader", "commenter", "writer"}
     if link_sharing is not None and link_sharing not in valid_link_sharing:
-        raise ValueError(
+        raise UserInputError(
             f"Invalid link_sharing '{link_sharing}'. Must be one of: {', '.join(sorted(valid_link_sharing))}"
         )
 
