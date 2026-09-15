@@ -40,7 +40,17 @@ _MIME_TO_EXTENSION = {
     "text/html": ".html",
 }
 
-_WINDOWS_RESERVED_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+# \x7f-\x9f covers DEL and the C1 control block, which the \x00-\x1f range does
+# not. U+0085 NEL lives there: Python reports it as category Cc, str.splitlines()
+# breaks on it, and it was passing through a rule whose whole purpose is to strip
+# control characters. "Control character" is not a synonym for "below space".
+_WINDOWS_RESERVED_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f-\x9f]')
+
+# Unicode separator categories. Zs (spaces) was already normalised; Zl and Zp are
+# its siblings -- U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR -- and were
+# not. Both are above U+0020, so no "is this a control character" test reaches
+# them, and both make str.splitlines() split.
+_SEPARATOR_CATEGORIES = frozenset({"Zs", "Zl", "Zp"})
 _WINDOWS_RESERVED_NAMES = {
     "CON",
     "PRN",
@@ -61,9 +71,10 @@ def sanitize_attachment_filename(filename: Optional[str]) -> str:
     if not filename:
         return "attachment"
 
-    # Normalize Unicode space separators (category "Zs") to a plain ASCII space.
+    # Normalize every Unicode separator (Zs, Zl, Zp) to a plain ASCII space.
     filename = "".join(
-        " " if unicodedata.category(ch) == "Zs" else ch for ch in filename
+        " " if unicodedata.category(ch) in _SEPARATOR_CATEGORIES else ch
+        for ch in filename
     )
 
     sanitized = _WINDOWS_RESERVED_FILENAME_CHARS.sub("_", filename).rstrip(" .")
