@@ -179,10 +179,23 @@ class TransientNetworkError(Exception):
     pass
 
 
-class UserInputError(Exception):
-    """Raised for user-facing input/validation errors that shouldn't be retried."""
+class UserInputError(ValueError):
+    """Raised for user-facing input/validation errors that shouldn't be retried.
 
-    pass
+    Subclasses ValueError DELIBERATELY, and the base class is load-bearing --
+    do not "tidy" it back to Exception.
+
+    handle_http_errors catches this before its terminal `except Exception`, so a
+    UserInputError is logged at WARNING and re-raised as itself ("Input error in
+    <tool>"), while a bare ValueError falls through to be logged with a full
+    traceback and re-raised as a generic Exception ("An unexpected error
+    occurred") -- a user's bad argument reported as an internal fault.
+
+    Deriving from ValueError is what lets a raise site be converted without
+    breaking its callers: every existing `except ValueError` still catches it,
+    and every `pytest.raises(ValueError)` still passes. Reparent this to
+    Exception and those callers stop catching, silently.
+    """
 
 
 def _coerce_json_str_to_type(v: Any, expected_type: type) -> Any:
