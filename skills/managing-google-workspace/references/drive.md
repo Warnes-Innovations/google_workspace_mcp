@@ -87,6 +87,19 @@ Every sort is **descending** -- ascending time order is never what "recent" mean
 
 **The sort key is not shown in the output.** Results carry `Created:` and `Modified:` times only, so for `recency`, `lastModifiedByMe`, `lastViewedByMe` and `sharedWithMe` the visible timestamps will appear out of order relative to the sort — the column you can see is not the one the list was sorted on. The header reports the sort *requested*, which is the honest claim: Drive documents that it ignores the requested order for accounts with very large file counts, and does not define where rows missing the sort key land.
 
+**Verified against the live API (2026-09-15).** All six distinct Drive sort keys
+behind these names -- `recency`, `modifiedTime`, `modifiedByMeTime`,
+`viewedByMeTime`, `createdTime`, `sharedWithMeTime` -- were accepted by
+`files.list`. Acceptance is meaningful here because the control fires: an
+unknown key (`notARealSortKey`) and a wrong-case one (`modifiedtime`) are both
+rejected with HTTP 400, so Drive does not silently ignore a sort it does not
+recognise. Ordering itself was confirmed descending only for `modifiedTime` and
+`createdTime`, the two whose timestamp Drive returns; for the other four the
+response carries no field to check against, so acceptance is the whole claim.
+`tests/live/test_drive_recency_live.py` re-runs all of this on demand -- it is
+opt-in via `WORKSPACE_MCP_LIVE_TESTS=1` plus cached credentials, and skips
+otherwise.
+
 `sharedWithMe` and `lastViewedByMe` add a matching query clause so results are restricted to files that actually carry the key. **`lastModifiedByMe` cannot** -- Drive has no `modifiedByMeTime` search term -- so in a large drive where you edited only a few files, that sort ranks many rows that have no such timestamp at all. Prefer `lastViewedByMe` or `recency` unless you specifically need "files I edited".
 
 ⚠️ **Do not combine `order_by='sharedWithMe'` with `drive_id`.** Shared drive files are reached through drive membership and are not in your "Shared with me" collection, so the two conditions intersect to nothing and you get `No recent files found` — which looks identical to an empty drive. For recent activity within one shared drive use the default `recency`, or `lastModified`, with `drive_id`.
